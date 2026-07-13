@@ -1,0 +1,93 @@
+buildscript {
+    repositories {
+        maven { url = 'https://files.minecraftforge.net/maven' }
+        maven { url = 'https://maven.minecraftforge.net' }
+        mavenCentral()
+    }
+    dependencies {
+        classpath group: 'net.minecraftforge.gradle', name: 'ForgeGradle', version: '5.1.+', changing: true
+    }
+}
+
+apply plugin: 'net.minecraftforge.gradle'
+
+version = '1.0.0'
+group = 'net.nobukym.rtma'
+archivesBaseName = 'rtma'
+
+sourceCompatibility = targetCompatibility = '1.8'
+compileJava.options.encoding = 'UTF-8'
+
+minecraft {
+    mappings channel: 'stable', version: '39-1.12'
+
+    runs {
+        client {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+            mods {
+                rtma {
+                    source sourceSets.main
+                }
+            }
+        }
+        server {
+            workingDirectory project.file('run')
+            property 'forge.logging.markers', 'REGISTRIES'
+            property 'forge.logging.console.level', 'debug'
+            mods {
+                rtma {
+                    source sourceSets.main
+                }
+            }
+        }
+    }
+}
+
+configurations {
+    // libsフォルダのjar(RTM本体)はコンパイル時の型解決にのみ使い、
+    // 実行時クラスパス(runClient/runServer)には絶対に含めない。
+    // compileOnlyだけではForgeGradle 5系のrunタスクに漏れることがあるため、
+    // 専用configurationを切ってcompileClasspathにだけ明示的に追加する。
+    rtmaProvided
+}
+
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.12.2-14.23.5.2860'
+
+    // RTM本体(jp.ngt.rtm)はローカルのlibsフォルダに手動配置する。
+    // 規約上配布できないため、各自のローカル環境でRTM本体jarをlibs/に置くこと。
+    // 実行時(mods/にも別途RTM本体を置いて起動する想定)には絶対に含めないこと。
+    rtmaProvided fileTree(dir: 'libs', include: '*.jar')
+    compileOnly fileTree(dir: 'libs', include: '*.jar')
+}
+
+sourceSets {
+    main {
+        compileClasspath += configurations.rtmaProvided
+        // runtimeClasspathには絶対に追加しない(これがmods/と重複ロードされる原因だった)
+    }
+}
+
+processResources {
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    def props = ['version': project.version, 'mcversion': '1.12.2']
+    inputs.properties props
+    filesMatching('mcmod.info') {
+        expand props
+    }
+}
+
+jar {
+    manifest {
+        attributes([
+                "Specification-Title": "rtma",
+                "Specification-Vendor": "nobukym",
+                "Specification-Version": "1",
+                "Implementation-Title": project.name,
+                "Implementation-Version": project.version,
+                "Implementation-Vendor": "nobukym"
+        ])
+    }
+}
