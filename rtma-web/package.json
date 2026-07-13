@@ -1,0 +1,13 @@
+{
+  "name": "rtma-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RTMA(RealTrainMod Automation) のレール/ポイント表示・時刻表編集Webアプリ。Minecraft本体とは独立して動作する。",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

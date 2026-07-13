@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RTMA 運転指令盤</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar__title">
+      <span class="topbar__mark">RTMA</span>
+      <span class="topbar__sub">運転指令盤</span>
+    </div>
+    <div class="topbar__status" id="status">接続待機中...</div>
+    <div class="topbar__modes">
+      <button class="mode-btn is-active" data-mode="2d">2D</button>
+      <button class="mode-btn" data-mode="3d" disabled title="準備中">3D</button>
+      <button class="mode-btn" id="reset-view-btn" title="表示を全体にフィットさせる">⟳ 全体表示</button>
+    </div>
+  </header>
+
+  <main id="map-root" class="map-root"></main>
+
+  <footer class="legend">
+    <span class="legend__item"><span class="legend__swatch legend__swatch--main"></span>定位側 開通中</span>
+    <span class="legend__item"><span class="legend__swatch legend__swatch--branch"></span>反位側 開通中</span>
+    <span class="legend__item"><span class="legend__swatch legend__swatch--idle"></span>非開通側</span>
+    <span class="legend__item"><span class="legend__swatch legend__swatch--rail"></span>通常区間</span>
+  </footer>
+
+  <script src="js/api.js"></script>
+  <script src="js/map2d.js"></script>
+  <script src="js/mapRenderer.js"></script>
+</body>
+</html>

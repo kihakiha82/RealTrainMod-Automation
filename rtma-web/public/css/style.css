@@ -1,0 +1,137 @@
+:root {
+  --bg: #0b0e11;
+  --panel: #11151a;
+  --line: #232a32;
+  --text: #d7dde2;
+  --text-dim: #7d8893;
+  --amber: #e8a33d;
+  --green: #3ddc84;
+  --red: #e85d4d;
+  --rail: #5a6472;
+  --mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  --sans: -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.topbar__title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.topbar__mark {
+  font-family: var(--mono);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--amber);
+}
+
+.topbar__sub {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.topbar__status {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.topbar__modes {
+  display: flex;
+  gap: 4px;
+}
+
+.mode-btn {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.mode-btn.is-active {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.mode-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.map-root {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  padding: 8px 16px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.legend__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend__swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.legend__swatch--main {
+  background: var(--green);
+}
+
+.legend__swatch--branch {
+  background: var(--amber);
+}
+
+.legend__swatch--idle {
+  background: var(--red);
+}
+
+.legend__swatch--rail {
+  background: var(--rail);
+}
