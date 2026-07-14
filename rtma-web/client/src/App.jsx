@@ -14,6 +14,8 @@ export default function App() {
   // (予測)ラベルもReact stateで管理 — TimeEditorと同じパターン
   const [isExtrapolating,setIsExtrapolating]= useState(false);
   const [serverSnapshot, setServerSnapshot] = useState(null);
+  // 選択中レール(seg.id)のSet。将来のプロパティパネル等、選択を使う機能はここを参照する想定
+  const [selectedIds,    setSelectedIds]    = useState(() => new Set());
 
   const mapRef          = useRef(null);
   const hasCenteredRef  = useRef(false);
@@ -26,6 +28,16 @@ export default function App() {
   // setInterval内のstaleクロージャを防ぐため、常に最新のtimeSnapshotをrefでも保持する
   const timeSnapshotRef = useRef(null);
   const snapshotRef = useRef(null);
+
+  /**
+   * レール右クリックメニューの項目が実行された時に呼ばれる。
+   * itemIdはmapEngine/contextMenuSchema.jsで定義したid(例: 'simple-operation:set-start-point')。
+   * 現時点では見た目のみの実装のため、実際の処理は未実装(プレースホルダーとしてログ出力のみ)。
+   * 今後ここでitemIdに応じて分岐し、targetIds(選択中レールのid一覧)に対する処理を実装していく。
+   */
+  function handleRailContextMenuAction(itemId, targetIds) {
+    console.log('[ContextMenu] action:', itemId, 'targets:', targetIds);
+  }
 
   // timeSnapshotRefを常に最新に保つ(setInterval内から参照するため)
   useEffect(() => { timeSnapshotRef.current = timeSnapshot; }, [timeSnapshot]);
@@ -254,6 +266,18 @@ export default function App() {
           </div>
 
           <div className="topbar__status">{status}</div>
+          {selectedIds.size > 0 && (
+              <div className="topbar__status">
+                選択中: {selectedIds.size}本
+                <button
+                    className="mode-btn"
+                    style={{ marginLeft: 8 }}
+                    onClick={() => setSelectedIds(new Set())}
+                >
+                  選択解除
+                </button>
+              </div>
+          )}
           <div className="topbar__modes">
             <button className="mode-btn is-active">2D</button>
             <button className="mode-btn" disabled title="準備中">3D</button>
@@ -264,7 +288,14 @@ export default function App() {
         </header>
 
         <main className="map-root">
-          <Map2D segments={segments} player={player} ref={mapRef} />
+          <Map2D
+              segments={segments}
+              player={player}
+              selectedIds={selectedIds}
+              onSelectionChange={setSelectedIds}
+              onContextMenuAction={handleRailContextMenuAction}
+              ref={mapRef}
+          />
           {!isServerRunning && (
               <TimeEditor
                   snapshot={serverSnapshot}

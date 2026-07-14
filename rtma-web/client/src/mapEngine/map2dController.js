@@ -9,12 +9,26 @@
  * (特にStrictModeでの二重実行)でも安全なように、グローバルなシングルトン
  * オブジェクトではなくファクトリ関数の形に書き直したもの。
  *
- * 操作: 左クリックドラッグ=パン、マウスホイール=ズーム(カーソル中心)。
+ * 操作:
+ *   - 左クリック(ドラッグ無し) = 単一選択(既存の選択は解除される)
+ *   - 左クリックドラッグ = 矩形範囲選択(掛かったセグメントをまとめて選択)
+ *   - Ctrl/Cmd+左クリック(またはCtrl/Cmd+ドラッグ) = 複数選択に追加/個別トグル
+ *   - Ctrl/Cmd+A(マップ内にマウスがある時) = 全選択
+ *   - 中クリック(ホイールボタン)ドラッグ = パン(マップ移動)
+ *   - マウスホイール = ズーム(カーソル中心)
+ *   - 右クリック(セグメント上) = コンテキストメニューを開く要求をonContextMenuで通知する
+ *     (メニューの中身自体はReact側(ContextMenu.jsx)が持つ。ここではヒット判定と選択状態の
+ *     調整のみ行う)
  * グリッドは1,2,4,8,16(1チャンク),32...ブロックの中からズームに応じて自動選択する。
+ *
+ * options.onSelectionChange: (Set<string>) => void
+ *   ユーザー操作で選択セグメント集合(seg.idのSet)が変わった時に呼ばれる。
+ *   React側(App.jsx)のstateへ橋渡しする想定。
  */
-export function createMap2DController(container) {
+export function createMap2DController(container, options = {}) {
+  const { onSelectionChange, onContextMenu } = options;
   const canvas = document.createElement('canvas');
-  canvas.style.cursor = 'grab';
+  canvas.style.cursor = 'default';
   canvas.style.display = 'block';
   container.appendChild(canvas);
   const ctx = canvas.getContext('2d');
@@ -26,11 +40,24 @@ export function createMap2DController(container) {
     offsetX: 0,
     offsetZ: 0,
     hasCamera: false, // centerOn/resetViewが一度も呼ばれていない間は描画しない(初期位置のずれを防ぐ)
-    dragging: false,
+    // 中クリックドラッグによるパン
+    panning: false,
     dragStartScreenX: 0,
     dragStartScreenY: 0,
     dragStartOffsetX: 0,
     dragStartOffsetZ: 0,
+    // 左クリックによる選択/矩形選択
+    leftPressActive: false,
+    leftDownScreenX: 0,
+    leftDownScreenY: 0,
+    leftDownCtrl: false,
+    rectSelecting: false,
+    rectCurrentScreenX: 0,
+    rectCurrentScreenY: 0,
+    // Ctrl+A全選択のため、マウスがマップ上にあるかどうかを追跡
+    pointerOverMap: false,
+    selectedIds: new Set(),
+    hoveredId: null,
   };
 
   // プレイヤー顔アイコンの読み込み状態(プレイヤー名が変わった時だけ再読み込みする)
@@ -56,9 +83,13 @@ export function createMap2DController(container) {
       panel: get('--panel', '#11151a'),
       line: get('--line', '#232a32'),
       text: get('--text-dim', '#7d8893'),
+      select: get('--select', '#4da3ff'),
     };
   }
   const colors = readColors();
+
+  const HIT_RADIUS_PX = 6; // クリック/ホバー判定の画面上の許容半径(px)
+  const CLICK_MOVE_THRESHOLD_PX = 5; // これ未満の移動ならドラッグではなくクリックとみなす
 
   function resize() {
     canvas.width = container.clientWidth;
@@ -107,6 +138,159 @@ export function createMap2DController(container) {
     if (!seg.isPoint) return colors.rail;
     if (!seg.isActiveRoute) return colors.idle;
     return seg.isMainRoute ? colors.main : colors.branch;
+  }
+
+  function isSelected(seg) {
+    return seg.id != null && state.selectedIds.has(seg.id);
+  }
+  function isHovered(seg) {
+    return seg.id != null && state.hoveredId === seg.id;
+  }
+
+  /** 点(px,pz)から線分(ax,az)-(bx,bz)への最短距離(ワールド座標系) */
+  function distToSegment(px, pz, ax, az, bx, bz) {
+    const dx = bx - ax, dz = bz - az;
+    const lenSq = dx * dx + dz * dz;
+    if (lenSq === 0) return Math.hypot(px - ax, pz - az);
+    let t = ((px - ax) * dx + (pz - az) * dz) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(px - (ax + t * dx), pz - (az + t * dz));
+  }
+
+  /** 点からポリライン(samples列)への最短距離(ワールド座標系) */
+  function distanceToPolyline(wx, wz, points) {
+    let best = Infinity;
+    for (let i = 0; i < points.length - 1; i++) {
+      const d = distToSegment(wx, wz, points[i].x, points[i].z, points[i + 1].x, points[i + 1].z);
+      if (d < best) best = d;
+    }
+    return best;
+  }
+
+  /** 画面座標(screenX, screenZ)にもっとも近いセグメントを、当たり判定半径内から探す */
+  function pickSegmentAt(screenX, screenZ) {
+    const [wx, wz] = toWorld(screenX, screenZ);
+    const hitRadiusWorld = HIT_RADIUS_PX / state.scale; // 画面上で一定の太さになるよう補正
+    let best = null, bestDist = Infinity;
+    for (const seg of state.segments) {
+      if (seg.id == null) continue; // IDの無いデータは選択対象外
+      const d = distanceToPolyline(wx, wz, pointsOf(seg));
+      if (d <= hitRadiusWorld && d < bestDist) {
+        best = seg;
+        bestDist = d;
+      }
+    }
+    return best;
+  }
+
+  /** 選択状態を更新し、再描画とonSelectionChangeへの通知を行う */
+  function applySelection(nextSet) {
+    state.selectedIds = nextSet;
+    draw();
+    onSelectionChange?.(new Set(nextSet));
+  }
+
+  /** クリック位置からセグメントを特定し、単一選択/Ctrl+複数選択トグル/背景クリックで解除、を行う */
+  function handleSelectionClick(clientX, clientY, isMultiToggle) {
+    const rect = canvas.getBoundingClientRect();
+    const hit = pickSegmentAt(clientX - rect.left, clientY - rect.top);
+
+    if (!hit) {
+      if (!isMultiToggle) applySelection(new Set());
+      return;
+    }
+
+    const next = new Set(state.selectedIds);
+    if (isMultiToggle) {
+      if (next.has(hit.id)) next.delete(hit.id);
+      else next.add(hit.id);
+    } else {
+      next.clear();
+      next.add(hit.id);
+    }
+    applySelection(next);
+  }
+
+  /**
+   * 右クリックされたセグメントに応じて選択状態を調整し、コンテキストメニューを開く要求を
+   * onContextMenu経由でReact側に伝える。メニューの中身・表示自体はReact側の責務。
+   *   - 右クリックしたセグメントが既に選択中の場合: 選択状態(複数選択含む)はそのまま維持
+   *   - 選択されていないセグメントを右クリックした場合: そのセグメント単体を新規選択
+   *   - 何もない場所を右クリックした場合: メニューは開かない(null通知のみ)
+   */
+  function onContextMenuEvent(e) {
+    e.preventDefault(); // ブラウザ標準の右クリックメニューを抑止
+    const rect = canvas.getBoundingClientRect();
+    const hit = pickSegmentAt(e.clientX - rect.left, e.clientY - rect.top);
+
+    if (!hit) {
+      onContextMenu?.(null);
+      return;
+    }
+    if (!state.selectedIds.has(hit.id)) {
+      applySelection(new Set([hit.id]));
+    }
+    onContextMenu?.({
+      x: e.clientX,
+      y: e.clientY,
+      targetIds: Array.from(state.selectedIds),
+    });
+  }
+
+  function pointInRect(x, z, rx0, rz0, rx1, rz1) {
+    return x >= rx0 && x <= rx1 && z >= rz0 && z <= rz1;
+  }
+
+  /** 線分(ox,oz)-(ax,az)から見て点(bx,bz)がどちら側にあるかの符号付き面積(外積) */
+  function cross(ox, oz, ax, az, bx, bz) {
+    return (ax - ox) * (bz - oz) - (az - oz) * (bx - ox);
+  }
+
+  /** 線分同士(端点を共有しない前提)が交差するか */
+  function segmentsIntersect(ax, az, bx, bz, cx, cz, dx, dz) {
+    const d1 = cross(cx, cz, dx, dz, ax, az);
+    const d2 = cross(cx, cz, dx, dz, bx, bz);
+    const d3 = cross(ax, az, bx, bz, cx, cz);
+    const d4 = cross(ax, az, bx, bz, dx, dz);
+    return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+           ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+  }
+
+  /**
+   * 線分(ax,az)-(bx,bz)が矩形[rx0,rz0]-[rx1,rz1]と交差 or 内包されているか。
+   * 端点がどちらも矩形の外でも、線分が矩形を貫通していれば選択対象にしたいので
+   * 矩形の4辺との交差判定もあわせて行う。
+   */
+  function segmentIntersectsRect(ax, az, bx, bz, rx0, rz0, rx1, rz1) {
+    if (pointInRect(ax, az, rx0, rz0, rx1, rz1) || pointInRect(bx, bz, rx0, rz0, rx1, rz1)) return true;
+    return (
+      segmentsIntersect(ax, az, bx, bz, rx0, rz0, rx1, rz0) ||
+      segmentsIntersect(ax, az, bx, bz, rx1, rz0, rx1, rz1) ||
+      segmentsIntersect(ax, az, bx, bz, rx1, rz1, rx0, rz1) ||
+      segmentsIntersect(ax, az, bx, bz, rx0, rz1, rx0, rz0)
+    );
+  }
+
+  /** 画面座標の矩形(x0,y0)-(x1,y1)に掛かっている全セグメントを選択する(Ctrl押下時は既存選択に追加) */
+  function handleRectSelection(clientX0, clientY0, clientX1, clientY1, isMultiToggle) {
+    const rect = canvas.getBoundingClientRect();
+    const [wx0, wz0] = toWorld(clientX0 - rect.left, clientY0 - rect.top);
+    const [wx1, wz1] = toWorld(clientX1 - rect.left, clientY1 - rect.top);
+    const rx0 = Math.min(wx0, wx1), rx1 = Math.max(wx0, wx1);
+    const rz0 = Math.min(wz0, wz1), rz1 = Math.max(wz0, wz1);
+
+    const next = isMultiToggle ? new Set(state.selectedIds) : new Set();
+    for (const seg of state.segments) {
+      if (seg.id == null) continue;
+      const points = pointsOf(seg);
+      for (let i = 0; i < points.length - 1; i++) {
+        if (segmentIntersectsRect(points[i].x, points[i].z, points[i + 1].x, points[i + 1].z, rx0, rz0, rx1, rz1)) {
+          next.add(seg.id);
+          break;
+        }
+      }
+    }
+    applySelection(next);
   }
 
   function pickGridStep() {
@@ -214,7 +398,9 @@ export function createMap2DController(container) {
 
   function drawSegment(seg) {
     const points = pointsOf(seg);
-    const color = colorFor(seg);
+    const selected = isSelected(seg);
+    const hovered = isHovered(seg);
+    const color = selected ? colors.select : colorFor(seg);
 
     ctx.beginPath();
     points.forEach((p, i) => {
@@ -223,7 +409,7 @@ export function createMap2DController(container) {
       else ctx.lineTo(x, z);
     });
     ctx.strokeStyle = color;
-    ctx.lineWidth = seg.isPoint ? 3 : 2;
+    ctx.lineWidth = (seg.isPoint ? 3 : 2) + (selected ? 2 : hovered ? 1 : 0);
     ctx.stroke();
 
     ctx.lineWidth = 1;
@@ -306,12 +492,42 @@ export function createMap2DController(container) {
     }
   }
 
+  /** 矩形選択中、ドラッグ範囲を半透明の矩形として表示する */
+  function drawSelectionRect() {
+    if (!state.rectSelecting) return;
+    const rect = canvas.getBoundingClientRect();
+    const x0 = state.leftDownScreenX - rect.left;
+    const y0 = state.leftDownScreenY - rect.top;
+    const x1 = state.rectCurrentScreenX - rect.left;
+    const y1 = state.rectCurrentScreenY - rect.top;
+    const x = Math.min(x0, x1), y = Math.min(y0, y1);
+    const w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
+
+    ctx.save();
+    ctx.fillStyle = colors.select;
+    ctx.globalAlpha = 0.12;
+    ctx.fillRect(x, y, w, h);
+    ctx.globalAlpha = 0.8;
+    ctx.strokeStyle = colors.select;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(x + 0.5, y + 0.5, w, h);
+    ctx.restore();
+  }
+
   function draw() {
     if (!state.hasCamera) return; // まだ視点が決まっていない間は描画しない
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     drawGridLines();
-    for (const seg of state.segments) drawSegment(seg);
+    // 選択中のセグメントは分岐の合流点などで他線と重なっても見えるよう、最後に上書き描画する
+    const selectedSegs = [];
+    for (const seg of state.segments) {
+      if (isSelected(seg)) selectedSegs.push(seg);
+      else drawSegment(seg);
+    }
+    for (const seg of selectedSegs) drawSegment(seg);
     drawPlayer();
+    drawSelectionRect();
     drawRulers();
   }
 
@@ -320,24 +536,111 @@ export function createMap2DController(container) {
     draw();
   }
   function onMouseDown(e) {
-    if (e.button !== 0) return;
-    state.dragging = true;
-    state.dragStartScreenX = e.clientX;
-    state.dragStartScreenY = e.clientY;
-    state.dragStartOffsetX = state.offsetX;
-    state.dragStartOffsetZ = state.offsetZ;
-    canvas.style.cursor = 'grabbing';
+    if (e.button === 1) {
+      // 中クリック(ホイールボタン)ドラッグ = パン
+      e.preventDefault(); // ブラウザの自動スクロールカーソルが出るのを防ぐ
+      state.panning = true;
+      state.dragStartScreenX = e.clientX;
+      state.dragStartScreenY = e.clientY;
+      state.dragStartOffsetX = state.offsetX;
+      state.dragStartOffsetZ = state.offsetZ;
+      canvas.style.cursor = 'grabbing';
+      return;
+    }
+    if (e.button === 0) {
+      // 左クリック = 選択操作の開始(実際に選択/矩形選択どちらになるかはmousemoveの移動量で決まる)
+      state.leftPressActive = true;
+      state.leftDownScreenX = e.clientX;
+      state.leftDownScreenY = e.clientY;
+      state.leftDownCtrl = e.ctrlKey || e.metaKey;
+      state.rectSelecting = false;
+    }
   }
   function onMouseMove(e) {
-    if (!state.dragging) return;
-    state.offsetX = state.dragStartOffsetX + (e.clientX - state.dragStartScreenX);
-    state.offsetZ = state.dragStartOffsetZ + (e.clientY - state.dragStartScreenY);
-    draw();
+    if (state.panning) {
+      state.offsetX = state.dragStartOffsetX + (e.clientX - state.dragStartScreenX);
+      state.offsetZ = state.dragStartOffsetZ + (e.clientY - state.dragStartScreenY);
+      draw();
+      return;
+    }
+    if (state.leftPressActive) {
+      const movedDist = Math.hypot(e.clientX - state.leftDownScreenX, e.clientY - state.leftDownScreenY);
+      if (movedDist >= CLICK_MOVE_THRESHOLD_PX) {
+        if (!state.rectSelecting) {
+          state.rectSelecting = true;
+          canvas.style.cursor = 'crosshair';
+        }
+        state.rectCurrentScreenX = e.clientX;
+        state.rectCurrentScreenY = e.clientY;
+        draw();
+      }
+      return;
+    }
+    updateHover(e.clientX, e.clientY);
   }
-  function onMouseUp() {
-    if (!state.dragging) return;
-    state.dragging = false;
-    canvas.style.cursor = 'grab';
+
+  /** 選択操作中でない時、マウス直下のセグメントをホバー状態にしてカーソルを変える */
+  function updateHover(clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    const mx = clientX - rect.left;
+    const my = clientY - rect.top;
+    const inBounds = mx >= 0 && my >= 0 && mx <= canvas.width && my <= canvas.height;
+    const hit = inBounds ? pickSegmentAt(mx, my) : null;
+    const newHoverId = hit ? hit.id : null;
+    if (newHoverId !== state.hoveredId) {
+      state.hoveredId = newHoverId;
+      canvas.style.cursor = hit ? 'pointer' : 'default';
+      draw();
+    }
+  }
+
+  function onMouseUp(e) {
+    if (state.panning && e.button === 1) {
+      state.panning = false;
+      canvas.style.cursor = state.hoveredId ? 'pointer' : 'default';
+      return;
+    }
+    if (!state.leftPressActive) return;
+    state.leftPressActive = false;
+
+    const isMulti = state.leftDownCtrl;
+    if (state.rectSelecting) {
+      state.rectSelecting = false;
+      canvas.style.cursor = state.hoveredId ? 'pointer' : 'default';
+      handleRectSelection(state.leftDownScreenX, state.leftDownScreenY, e.clientX, e.clientY, isMulti);
+    } else {
+      handleSelectionClick(e.clientX, e.clientY, isMulti);
+    }
+  }
+
+  /** マップ上にマウスがある時のCtrl/Cmd+Aで全セグメントを選択する */
+  function onKeyDown(e) {
+    if (!state.pointerOverMap) return;
+    const isSelectAll = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a';
+    if (!isSelectAll) return;
+    e.preventDefault(); // ページ全体のテキスト選択を防ぐ
+    const allIds = new Set();
+    for (const seg of state.segments) {
+      if (seg.id != null) allIds.add(seg.id);
+    }
+    applySelection(allIds);
+  }
+
+  function onMouseEnterCanvas() {
+    state.pointerOverMap = true;
+  }
+  function onMouseLeaveCanvas() {
+    state.pointerOverMap = false;
+    // マップ外に出たらホバー表示を消す(矩形選択・パン中はwindow側のmousemoveで継続するので影響しない)
+    if (!state.panning && !state.leftPressActive && state.hoveredId !== null) {
+      state.hoveredId = null;
+      canvas.style.cursor = 'default';
+      draw();
+    }
+  }
+  /** 中クリックはブラウザ標準の自動スクロール/リンクを新規タブで開く等の挙動を持つため無効化する */
+  function preventAuxClick(e) {
+    e.preventDefault();
   }
   function onWheel(e) {
     e.preventDefault();
@@ -358,6 +661,13 @@ export function createMap2DController(container) {
   window.addEventListener('mousemove', onMouseMove);
   window.addEventListener('mouseup', onMouseUp);
   canvas.addEventListener('wheel', onWheel, { passive: false });
+  // Ctrl+A全選択のため、マウスがマップ上にあるかどうかを追跡する
+  canvas.addEventListener('mouseenter', onMouseEnterCanvas);
+  canvas.addEventListener('mouseleave', onMouseLeaveCanvas);
+  window.addEventListener('keydown', onKeyDown);
+  // 中クリックによるブラウザ標準の右クリックメニュー等の誤爆を防ぐ
+  canvas.addEventListener('auxclick', preventAuxClick);
+  canvas.addEventListener('contextmenu', onContextMenuEvent);
 
   return {
     setSegments(segments) {
@@ -386,10 +696,21 @@ export function createMap2DController(container) {
       state.hasCamera = true;
       draw();
     },
+    /**
+     * 選択状態を外部(React側)から上書きする。
+     * ユーザーのクリック操作による選択変更はonSelectionChange経由でReact側に伝わるので、
+     * ここでのループ(React → controller → React)は起きない前提だが、
+     * 呼び出し側は同じSet内容を渡すだけならdraw()が無駄に走る程度で実害はない。
+     */
+    setSelectedIds(ids) {
+      state.selectedIds = ids ? new Set(ids) : new Set();
+      draw();
+    },
     destroy() {
       window.removeEventListener('resize', onResize);
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('keydown', onKeyDown);
       if (canvas.parentNode) canvas.parentNode.removeChild(canvas);
     },
   };
