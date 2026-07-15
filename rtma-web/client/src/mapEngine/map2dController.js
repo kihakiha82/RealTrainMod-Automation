@@ -36,6 +36,7 @@ export function createMap2DController(container, options = {}) {
   const state = {
     segments: [],
     player: null,
+    routePath: null, // { id, reversed }[]
     scale: 1,
     offsetX: 0,
     offsetZ: 0,
@@ -84,6 +85,7 @@ export function createMap2DController(container, options = {}) {
       line: get('--line', '#232a32'),
       text: get('--text-dim', '#7d8893'),
       select: get('--select', '#4da3ff'),
+      route: get('--route', '#ffb700'), // 経路ハイライト色(デフォルト: オレンジ)
     };
   }
   const colors = readColors();
@@ -145,6 +147,9 @@ export function createMap2DController(container, options = {}) {
   }
   function isHovered(seg) {
     return seg.id != null && state.hoveredId === seg.id;
+  }
+  function isInRoute(seg) {
+    return state.routePath && state.routePath.some(r => r.id === seg.id);
   }
 
   /** 点(px,pz)から線分(ax,az)-(bx,bz)への最短距離(ワールド座標系) */
@@ -400,7 +405,15 @@ export function createMap2DController(container, options = {}) {
     const points = pointsOf(seg);
     const selected = isSelected(seg);
     const hovered = isHovered(seg);
-    const color = selected ? colors.select : colorFor(seg);
+    const inRoute = isInRoute(seg);
+    let color = colorFor(seg);
+    
+    // 経路内のセグメントはハイライト色で表示
+    if (inRoute) {
+      color = colors.route;
+    } else if (selected) {
+      color = colors.select;
+    }
 
     ctx.beginPath();
     points.forEach((p, i) => {
@@ -409,26 +422,111 @@ export function createMap2DController(container, options = {}) {
       else ctx.lineTo(x, z);
     });
     ctx.strokeStyle = color;
-    ctx.lineWidth = (seg.isPoint ? 3 : 2) + (selected ? 2 : hovered ? 1 : 0);
+    ctx.lineWidth = (seg.isPoint ? 3 : 2) + (selected ? 2 : inRoute ? 1.5 : hovered ? 1 : 0);
     ctx.stroke();
 
-    ctx.lineWidth = 1;
-    ctx.globalAlpha = 0.5;
-    for (let i = 0; i < points.length - 1; i++) {
-      const [ax, az] = toScreen(points[i].x, points[i].z);
-      const [bx, bz] = toScreen(points[i + 1].x, points[i + 1].z);
-      const dx = bx - ax, dz = bz - az;
+    // 選択されていないセグメントのティック表示
+    if (!selected) {
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = 0.5;
+      for (let i = 0; i < points.length - 1; i++) {
+        const [ax, az] = toScreen(points[i].x, points[i].z);
+        const [bx, bz] = toScreen(points[i + 1].x, points[i + 1].z);
+        const dx = bx - ax, dz = bz - az;
+        const len = Math.hypot(dx, dz) || 1;
+        const nx = -dz / len, nz = dx / len;
+        const mx = (ax + bx) / 2, mz = (az + bz) / 2;
+        const tickLen = 4;
+        ctx.beginPath();
+        ctx.moveTo(mx - nx * tickLen, mz - nz * tickLen);
+        ctx.lineTo(mx + nx * tickLen, mz + nz * tickLen);
+        ctx.strokeStyle = color;
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  /**
+   * 経路内のセグメントに対して、向き判定(reversed フラグ)に基づいた矢印を描画する。
+   * reversed:false の場合は start→end の向きに矢印を表示
+   * reversed:true の場合は end→start の向きに矢印を表示
+   */
+  function drawRouteArrows() {
+    if (!state.routePath || state.routePath.length === 0) return;
+
+    ctx.save();
+    ctx.strokeStyle = colors.route;
+    ctx.fillStyle = colors.route;
+    ctx.globalAlpha = 0.8;
+    ctx.lineWidth = 2;
+
+    for (const routeEntry of state.routePath) {
+      const seg = state.segments.find(s => s.id === routeEntry.id);
+      if (!seg) continue;
+
+      const points = pointsOf(seg);
+      if (points.length < 2) continue;
+
+      // セグメントの方向を判定
+      let startPoint, endPoint;
+      if (routeEntry.reversed) {
+        // 逆向き: end→start
+        startPoint = points[points.length - 1];
+        endPoint = points[0];
+      } else {
+        // 順向き: start→end
+        startPoint = points[0];
+        endPoint = points[points.length - 1];
+      }
+
+      // セグメントの中点に矢印を描画
+      const [sx, sz] = toScreen(startPoint.x, startPoint.z);
+      const [ex, ez] = toScreen(endPoint.x, endPoint.z);
+
+      // 矢印の中点
+      const mx = (sx + ex) / 2;
+      const mz = (sz + ez) / 2;
+
+      // 矢印の方向ベクトル
+      const dx = ex - sx;
+      const dz = ez - sz;
       const len = Math.hypot(dx, dz) || 1;
-      const nx = -dz / len, nz = dx / len;
-      const mx = (ax + bx) / 2, mz = (az + bz) / 2;
-      const tickLen = 4;
+      const dirX = dx / len;
+      const dirZ = dz / len;
+
+      // 矢印の大きさ
+      const arrowLen = 12;
+      const arrowWidth = 6;
+
+      // 矢印の先端
+      const tipX = mx + dirX * arrowLen;
+      const tipZ = mz + dirZ * arrowLen;
+
+      // 矢印の根元(左右)
+      const baseLeftX = mx - dirZ * arrowWidth;
+      const baseLeftZ = mz + dirX * arrowWidth;
+      const baseRightX = mx + dirZ * arrowWidth;
+      const baseRightZ = mz - dirX * arrowWidth;
+
+      // 矢印を三角形で描画
       ctx.beginPath();
-      ctx.moveTo(mx - nx * tickLen, mz - nz * tickLen);
-      ctx.lineTo(mx + nx * tickLen, mz + nz * tickLen);
-      ctx.strokeStyle = color;
+      ctx.moveTo(tipX, tipZ);
+      ctx.lineTo(baseLeftX, baseLeftZ);
+      ctx.lineTo(baseRightX, baseRightZ);
+      ctx.closePath();
+      ctx.fill();
+
+      // 矢印の輪郭を描画
+      ctx.beginPath();
+      ctx.moveTo(tipX, tipZ);
+      ctx.lineTo(baseLeftX, baseLeftZ);
+      ctx.lineTo(baseRightX, baseRightZ);
+      ctx.closePath();
       ctx.stroke();
     }
-    ctx.globalAlpha = 1;
+
+    ctx.restore();
   }
 
   /** プレイヤー名が変わったら、対応する顔アイコン(Mod側が書き出すPNG)を読み込む */
@@ -519,6 +617,11 @@ export function createMap2DController(container, options = {}) {
     if (!state.hasCamera) return; // まだ視点が決まっていない間は描画しない
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     drawGridLines();
+    
+    // 経路セグメントを先に描画（選択中のセグメントの下に隠れる）
+    const routeSegIds = new Set(state.routePath?.map(r => r.id) ?? []);
+    const routeSegs = [];
+    
     // 選択中のセグメントは分岐の合流点などで他線と重なっても見えるよう、最後に上書き描画する
     const selectedSegs = [];
     for (const seg of state.segments) {
@@ -526,6 +629,10 @@ export function createMap2DController(container, options = {}) {
       else drawSegment(seg);
     }
     for (const seg of selectedSegs) drawSegment(seg);
+    
+    // 経路の矢印を描画
+    drawRouteArrows();
+    
     drawPlayer();
     drawSelectionRect();
     drawRulers();
@@ -680,6 +787,11 @@ export function createMap2DController(container, options = {}) {
     setPlayer(player) {
       state.player = player || null;
       ensurePlayerImageLoaded();
+      draw();
+    },
+    /** 経路セグメント列({ id, reversed }[])を更新する。nullで非表示にできる */
+    setRoutePath(routePath) {
+      state.routePath = routePath || null;
       draw();
     },
     /** ワールド座標(x, z)を画面中心にして表示する。scale省略時はデフォルト倍率を使う */
