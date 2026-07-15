@@ -1,0 +1,14 @@
+{
+  "kiha600": {
+    "resourceName": "kiha600",
+    "acceleration": 0.0015,
+    "maxSpeedStages": [
+      0.2,
+      0.3,
+      0.4
+    ],
+    "trainDistance": 0.6,
+    "rolling": 0.0005,
+    "tags": "diesel,local,sample"
+  }
+}

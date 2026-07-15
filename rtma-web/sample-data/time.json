@@ -1,8 +1,9 @@
 {
   "mode": "RTMA",
-  "year": 1,
-  "dayOfYear": 1,
-  "hour": 0,
-  "minute": 0,
-  "second": 30
+  "elapsedTicks": 24000,
+  "year": 2026,
+  "dayOfYear": 195,
+  "hour": 8,
+  "minute": 30,
+  "second": 0
 }
