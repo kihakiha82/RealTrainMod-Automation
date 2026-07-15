@@ -92,6 +92,8 @@ export function createMap2DController(container, options = {}) {
 
   const HIT_RADIUS_PX = 6; // クリック/ホバー判定の画面上の許容半径(px)
   const CLICK_MOVE_THRESHOLD_PX = 5; // これ未満の移動ならドラッグではなくクリックとみなす
+  const ARROW_SIZE = 8; // 矢印アイコンのサイズ(px)
+  const ARROW_SPACING = 20; // 矢印間のスペーシング(px)
 
   function resize() {
     canvas.width = container.clientWidth;
@@ -448,18 +450,40 @@ export function createMap2DController(container, options = {}) {
   }
 
   /**
-   * 経路内のセグメントに対して、向き判定(reversed フラグ)に基づいた矢印を描画する。
-   * reversed:false の場合は start→end の向きに矢印を表示
-   * reversed:true の場合は end→start の向きに矢印を表示
+   * 矢印アイコンを描画(三角形)
+   * x, y: 位置、angle: 回転角(ラジアン)、size: サイズ、color: 色
    */
-  function drawRouteArrows() {
+  function drawArrowIcon(x, y, angle, size, color) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    // 三角形: 先端→左→右
+    ctx.moveTo(size / 2, 0); // 先端
+    ctx.lineTo(-size / 2, -size / 2); // 左
+    ctx.lineTo(-size / 2, size / 2); // 右
+    ctx.closePath();
+    ctx.fill();
+    
+    // アウトライン
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    
+    ctx.restore();
+  }
+
+  /**
+   * 経路全体に沿って矢印テクスチャを描画する
+   * reversed フラグに基づいて矢印の向きを調整
+   */
+  function drawDirectionalArrowsAlongPath() {
     if (!state.routePath || state.routePath.length === 0) return;
 
     ctx.save();
-    ctx.strokeStyle = colors.route;
-    ctx.fillStyle = colors.route;
-    ctx.globalAlpha = 0.8;
-    ctx.lineWidth = 2;
+    ctx.globalAlpha = 0.85;
 
     for (const routeEntry of state.routePath) {
       const seg = state.segments.find(s => s.id === routeEntry.id);
@@ -469,61 +493,35 @@ export function createMap2DController(container, options = {}) {
       if (points.length < 2) continue;
 
       // セグメントの方向を判定
-      let startPoint, endPoint;
-      if (routeEntry.reversed) {
-        // 逆向き: end→start
-        startPoint = points[points.length - 1];
-        endPoint = points[0];
-      } else {
-        // 順向き: start→end
-        startPoint = points[0];
-        endPoint = points[points.length - 1];
+      let isReversed = routeEntry.reversed;
+
+      // ポイントの方向を決定
+      const orderedPoints = isReversed ? [...points].reverse() : points;
+
+      // セグメント内の各線分に沿って矢印を配置
+      for (let i = 0; i < orderedPoints.length - 1; i++) {
+        const p1 = orderedPoints[i];
+        const p2 = orderedPoints[i + 1];
+
+        const [sx1, sz1] = toScreen(p1.x, p1.z);
+        const [sx2, sz2] = toScreen(p2.x, p2.z);
+
+        // 線分の長さと方向
+        const dx = sx2 - sx1;
+        const dz = sz2 - sz1;
+        const lineLen = Math.hypot(dx, dz);
+        const angle = Math.atan2(dz, dx);
+
+        // 線分に沿って矢印を配置
+        const arrowCount = Math.max(1, Math.floor(lineLen / ARROW_SPACING));
+        for (let j = 0; j <= arrowCount; j++) {
+          const t = arrowCount > 0 ? j / arrowCount : 0.5;
+          const arrowX = sx1 + dx * t;
+          const arrowY = sz1 + dz * t;
+
+          drawArrowIcon(arrowX, arrowY, angle, ARROW_SIZE, colors.route);
+        }
       }
-
-      // セグメントの中点に矢印を描画
-      const [sx, sz] = toScreen(startPoint.x, startPoint.z);
-      const [ex, ez] = toScreen(endPoint.x, endPoint.z);
-
-      // 矢印の中点
-      const mx = (sx + ex) / 2;
-      const mz = (sz + ez) / 2;
-
-      // 矢印の方向ベクトル
-      const dx = ex - sx;
-      const dz = ez - sz;
-      const len = Math.hypot(dx, dz) || 1;
-      const dirX = dx / len;
-      const dirZ = dz / len;
-
-      // 矢印の大きさ
-      const arrowLen = 12;
-      const arrowWidth = 6;
-
-      // 矢印の先端
-      const tipX = mx + dirX * arrowLen;
-      const tipZ = mz + dirZ * arrowLen;
-
-      // 矢印の根元(左右)
-      const baseLeftX = mx - dirZ * arrowWidth;
-      const baseLeftZ = mz + dirX * arrowWidth;
-      const baseRightX = mx + dirZ * arrowWidth;
-      const baseRightZ = mz - dirX * arrowWidth;
-
-      // 矢印を三角形で描画
-      ctx.beginPath();
-      ctx.moveTo(tipX, tipZ);
-      ctx.lineTo(baseLeftX, baseLeftZ);
-      ctx.lineTo(baseRightX, baseRightZ);
-      ctx.closePath();
-      ctx.fill();
-
-      // 矢印の輪郭を描画
-      ctx.beginPath();
-      ctx.moveTo(tipX, tipZ);
-      ctx.lineTo(baseLeftX, baseLeftZ);
-      ctx.lineTo(baseRightX, baseRightZ);
-      ctx.closePath();
-      ctx.stroke();
     }
 
     ctx.restore();
@@ -618,20 +616,17 @@ export function createMap2DController(container, options = {}) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     drawGridLines();
     
-    // 経路セグメントを先に描画（選択中のセグメントの下に隠れる）
-    const routeSegIds = new Set(state.routePath?.map(r => r.id) ?? []);
-    const routeSegs = [];
-    
-    // 選択中のセグメントは分岐の合流点などで他線と重なっても見えるよう、最後に上書き描画する
+    // 通常セグメント → 矢印 → 選択セグメント → プレイヤー → 選択矩形 → ルーラー
     const selectedSegs = [];
     for (const seg of state.segments) {
       if (isSelected(seg)) selectedSegs.push(seg);
       else drawSegment(seg);
     }
-    for (const seg of selectedSegs) drawSegment(seg);
     
     // 経路の矢印を描画
-    drawRouteArrows();
+    drawDirectionalArrowsAlongPath();
+    
+    for (const seg of selectedSegs) drawSegment(seg);
     
     drawPlayer();
     drawSelectionRect();
