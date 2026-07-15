@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import Map2D from './components/Map2D';
 import TimeEditor from './components/TimeEditor';
-import { fetchRails, fetchPlayerPosition, fetchTime, saveTime } from './api';
+import { fetchRails, fetchPlayerPosition, fetchTime, saveTime, fetchRouteProfile } from './api';
 import { extrapolateTime, extrapolateFullDateTime, formatDateTime } from './timeUtils';
+import { findRailRoute } from './mapEngine/railGraph';
 
 export default function App() {
   const [segments,       setSegments]       = useState([]);
@@ -16,6 +17,12 @@ export default function App() {
   const [serverSnapshot, setServerSnapshot] = useState(null);
   // 選択中レール(seg.id)のSet。将来のプロパティパネル等、選択を使う機能はここを参照する想定
   const [selectedIds,    setSelectedIds]    = useState(() => new Set());
+  // 簡易運行: 右クリックメニュー「点を設定」「終点を設定」でマークしたセグメントid
+  const [routeStartId,   setRouteStartId]   = useState(null);
+  const [routeEndId,     setRouteEndId]     = useState(null);
+  // 経路計算(/api/route-profile)の結果。{ ok, totalLength, pointCount } | { error } | null
+  const [routeResult,    setRouteResult]    = useState(null);
+  const [isComputingRoute, setIsComputingRoute] = useState(false);
 
   const mapRef          = useRef(null);
   const hasCenteredRef  = useRef(false);
@@ -32,11 +39,46 @@ export default function App() {
   /**
    * レール右クリックメニューの項目が実行された時に呼ばれる。
    * itemIdはmapEngine/contextMenuSchema.jsで定義したid(例: 'simple-operation:set-start-point')。
-   * 現時点では見た目のみの実装のため、実際の処理は未実装(プレースホルダーとしてログ出力のみ)。
-   * 今後ここでitemIdに応じて分岐し、targetIds(選択中レールのid一覧)に対する処理を実装していく。
+   * 「点を設定」「終点を設定」だけ実処理(簡易運行の始点/終点セグメントを記憶する)を行い、
+   * それ以外(「点の編集」「レール情報の表示」)はまだ見た目のみ(プレースホルダー)。
    */
   function handleRailContextMenuAction(itemId, targetIds) {
+    if (itemId === 'simple-operation:set-start-point') {
+      setRouteStartId(targetIds[0] ?? null);
+      setRouteResult(null); // 始点/終点が変わったら前回の計算結果は無効なのでクリアする
+      return;
+    }
+    if (itemId === 'simple-operation:set-end-point') {
+      setRouteEndId(targetIds[0] ?? null);
+      setRouteResult(null);
+      return;
+    }
     console.log('[ContextMenu] action:', itemId, 'targets:', targetIds);
+  }
+
+  /** 簡易運行: 現在の始点/終点からrailGraphで経路を求め、/api/route-profileへ渡す */
+  async function handleComputeRoute() {
+    if (!routeStartId || !routeEndId) return;
+    setIsComputingRoute(true);
+    setRouteResult(null);
+    try {
+      const route = findRailRoute(segments, routeStartId, routeEndId);
+      if (!route) {
+        setRouteResult({ error: '始点と終点が線路で繋がっていません' });
+        return;
+      }
+      const profile = await fetchRouteProfile(route);
+      setRouteResult({
+        ok: true,
+        segmentCount: route.length,
+        totalLength: profile.totalLength,
+        pointCount: profile.points.length,
+      });
+    } catch (e) {
+      setRouteResult({ error: e.message });
+    } finally {
+      setIsComputingRoute(false);
+    }
   }
 
   // timeSnapshotRefを常に最新に保つ(setInterval内から参照するため)
@@ -276,6 +318,35 @@ export default function App() {
                 >
                   選択解除
                 </button>
+              </div>
+          )}
+          {(routeStartId || routeEndId) && (
+              <div className="topbar__status">
+                簡易運行: 始点{routeStartId ? '✓' : '未設定'} / 終点{routeEndId ? '✓' : '未設定'}
+                <button
+                    className="mode-btn"
+                    style={{ marginLeft: 8 }}
+                    disabled={!routeStartId || !routeEndId || isComputingRoute}
+                    onClick={handleComputeRoute}
+                >
+                  {isComputingRoute ? '計算中...' : '経路を計算'}
+                </button>
+                <button
+                    className="mode-btn"
+                    style={{ marginLeft: 4 }}
+                    onClick={() => { setRouteStartId(null); setRouteEndId(null); setRouteResult(null); }}
+                >
+                  クリア
+                </button>
+                {routeResult?.ok && (
+                    <span style={{ marginLeft: 8, color: 'var(--green)' }}>
+                      ✓ {routeResult.segmentCount}区間 / 距離{routeResult.totalLength.toFixed(1)}ブロック
+                      / 点数{routeResult.pointCount}
+                    </span>
+                )}
+                {routeResult?.error && (
+                    <span style={{ marginLeft: 8, color: 'var(--red)' }}>✗ {routeResult.error}</span>
+                )}
               </div>
           )}
           <div className="topbar__modes">
