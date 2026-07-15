@@ -12,12 +12,13 @@ import ContextMenu from './ContextMenu';
  * ref.current.resetView() で親から「全体表示」を呼べる。
  *
  * selectedIds: 選択中セグメントのidのSet(controlled)。
+ * routePath: 計算された経路セグメント列({ id, reversed }[])。
  * onSelectionChange: ユーザーのクリック操作で選択が変わった時に呼ばれる((Set) => void)。
  * onContextMenuAction: 右クリックメニューの項目が実行された時に呼ばれる((itemId, targetIds) => void)。
  *   何もしなくても動く(メニュー自体はこのコンポーネント内で開閉が完結する)ので省略可能。
  */
 const Map2D = forwardRef(function Map2D(
-  { segments, player, selectedIds, onSelectionChange, onContextMenuAction },
+  { segments, player, selectedIds, routePath, onSelectionChange, onContextMenuAction },
   ref
 ) {
   const containerRef = useRef(null);
@@ -55,6 +56,10 @@ const Map2D = forwardRef(function Map2D(
   useEffect(() => {
     controllerRef.current?.setSelectedIds(selectedIds);
   }, [selectedIds]);
+
+  useEffect(() => {
+    controllerRef.current?.setRoutePath(routePath);
+  }, [routePath]);
 
   useImperativeHandle(ref, () => ({
     resetView() {
