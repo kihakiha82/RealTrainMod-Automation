@@ -1,6 +1,8 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const { buildRouteProfile } = require('./calc/routeProfile');
+const { resolveOrderedSegments } = require('./calc/orderedRouteResolver');
 
 const app = express();
 const PORT = process.env.PORT || 4500;
@@ -32,6 +34,43 @@ app.get('/api/rails', (req, res) => {
       return;
     }
     res.type('application/json').send(data);
+  });
+});
+
+// 選択されたレールを順序付き経路として受け取り、RouteProfile(距離順の1本の配列)を計算する。
+// Web側(mapEngine/railGraph.js#findRailRoute)が組み立てた { id, reversed }[] を受け取り、
+// サーバー側で保持しているrails.json(source of truth)と突き合わせて実体化してから計算する。
+// body: { route: { id: string, reversed: boolean }[] }
+app.post('/api/route-profile', (req, res) => {
+  const { route } = req.body;
+  if (!Array.isArray(route) || route.length === 0) {
+    res.status(400).json({ error: 'routeは1件以上の { id, reversed } の配列である必要があります' });
+    return;
+  }
+
+  const filePath = path.join(DATA_DIR, 'rails.json');
+  fs.readFile(filePath, 'utf-8', (err, data) => {
+    if (err) {
+      res.status(404).json({ error: 'rails.jsonが見つかりません', path: filePath });
+      return;
+    }
+
+    let allSegments;
+    try {
+      allSegments = JSON.parse(data);
+    } catch {
+      res.status(500).json({ error: 'rails.jsonのパースに失敗しました' });
+      return;
+    }
+
+    try {
+      const orderedSegments = resolveOrderedSegments(route, allSegments);
+      const profile = buildRouteProfile(orderedSegments);
+      res.json(profile);
+    } catch (resolveErr) {
+      // route中のidがrails.json側に見つからない等(rails.jsonが更新された場合に起こりうる)
+      res.status(400).json({ error: resolveErr.message });
+    }
   });
 });
 
