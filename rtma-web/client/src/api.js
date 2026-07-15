@@ -44,6 +44,24 @@ export async function saveTime({ year, dayOfYear, hour, minute, second }) {
   return res.json();
 }
 
+/**
+ * 選択したレールの経路(始点セグメント→終点セグメント)からRouteProfileを計算する。
+ * route: mapEngine/railGraph.js#findRailRouteの戻り値({id, reversed}[])をそのまま渡す。
+ * 戻り値: calc/routeProfile.js#buildRouteProfileの戻り値({points, totalLength})。
+ */
+export async function fetchRouteProfile(route) {
+  const res = await fetch('/api/route-profile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ route }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `経路プロファイルの計算に失敗しました (HTTP ${res.status})`);
+  }
+  return res.json();
+}
+
 export async function fetchTimetable(name) {
   const res = await fetch(`/api/timetables/${encodeURIComponent(name)}`);
   if (!res.ok) {
