@@ -23,6 +23,8 @@ export default function App() {
   // 経路計算(/api/route-profile)の結果。{ ok, totalLength, pointCount } | { error } | null
   const [routeResult,    setRouteResult]    = useState(null);
   const [isComputingRoute, setIsComputingRoute] = useState(false);
+  // 計算された経路セグメント列。{ id, reversed }[] | null
+  const [routePath,      setRoutePath]      = useState(null);
 
   const mapRef          = useRef(null);
   const hasCenteredRef  = useRef(false);
@@ -46,11 +48,13 @@ export default function App() {
     if (itemId === 'simple-operation:set-start-point') {
       setRouteStartId(targetIds[0] ?? null);
       setRouteResult(null); // 始点/終点が変わったら前回の計算結果は無効なのでクリアする
+      setRoutePath(null);   // 経路もクリア
       return;
     }
     if (itemId === 'simple-operation:set-end-point') {
       setRouteEndId(targetIds[0] ?? null);
       setRouteResult(null);
+      setRoutePath(null);
       return;
     }
     console.log('[ContextMenu] action:', itemId, 'targets:', targetIds);
@@ -61,12 +65,16 @@ export default function App() {
     if (!routeStartId || !routeEndId) return;
     setIsComputingRoute(true);
     setRouteResult(null);
+    setRoutePath(null);
     try {
       const route = findRailRoute(segments, routeStartId, routeEndId);
       if (!route) {
         setRouteResult({ error: '始点と終点が線路で繋がっていません' });
         return;
       }
+      // 計算された経路をstateに保存（ハイライト・矢印表示用）
+      setRoutePath(route);
+      
       const profile = await fetchRouteProfile(route);
       setRouteResult({
         ok: true,
@@ -334,7 +342,7 @@ export default function App() {
                 <button
                     className="mode-btn"
                     style={{ marginLeft: 4 }}
-                    onClick={() => { setRouteStartId(null); setRouteEndId(null); setRouteResult(null); }}
+                    onClick={() => { setRouteStartId(null); setRouteEndId(null); setRouteResult(null); setRoutePath(null); }}
                 >
                   クリア
                 </button>
@@ -363,6 +371,7 @@ export default function App() {
               segments={segments}
               player={player}
               selectedIds={selectedIds}
+              routePath={routePath}
               onSelectionChange={setSelectedIds}
               onContextMenuAction={handleRailContextMenuAction}
               ref={mapRef}
