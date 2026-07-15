@@ -1,8 +1,8 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
-const { buildRouteProfile } = require('./calc/routeProfile');
-const { resolveOrderedSegments } = require('./calc/orderedRouteResolver');
+const { buildRouteProfile } = require('../client/calc/routeProfile');
+const { resolveOrderedSegments } = require('../client/calc/orderedRouteResolver');
 
 const app = express();
 const PORT = process.env.PORT || 4500;
