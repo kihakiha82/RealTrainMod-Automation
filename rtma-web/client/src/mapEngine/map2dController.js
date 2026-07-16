@@ -64,7 +64,8 @@ export function createMap2DController(container, options = {}) {
   // プレイヤー顔アイコンの読み込み状態(プレイヤー名が変わった時だけ再読み込みする)
   let playerImage = null;
   let playerImageKey = null;
-
+  let arrowImage = null;
+  
   const MIN_SCALE = 0.02;
   const MAX_SCALE = 300;
   const GRID_STEPS = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096];
@@ -447,6 +448,19 @@ export function createMap2DController(container, options = {}) {
       }
       ctx.globalAlpha = 1;
     }
+  }
+
+  function drawArrowTexture(x, y, angle, size) {
+    const img = new Image();
+    img.onload = () => {
+      arrowImage = img;
+      draw();
+    };
+    img.onerror = () => {
+      arrowImage = null;
+    };
+    img.src = `/images/players/arrowRouted.png`;
+    
   }
 
   /**
