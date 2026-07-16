@@ -25,6 +25,8 @@
  *   ユーザー操作で選択セグメント集合(seg.idのSet)が変わった時に呼ばれる。
  *   React側(App.jsx)のstateへ橋渡しする想定。
  */
+import arrowIconUrl from '../assets/routed_arrow.png';
+
 export function createMap2DController(container, options = {}) {
   const { onSelectionChange, onContextMenu } = options;
   const canvas = document.createElement('canvas');
@@ -64,11 +66,23 @@ export function createMap2DController(container, options = {}) {
   // プレイヤー顔アイコンの読み込み状態(プレイヤー名が変わった時だけ再読み込みする)
   let playerImage = null;
   let playerImageKey = null;
-  
-  import arrowIconUrl from '../assets/arrow-icon.png';
+
+  // 矢印アイコン画像(固定アセットなので初回に1回だけ読み込む)
   let arrowImage = null;
   let arrowImageLoaded = false;
-  
+  (function loadArrowImage() {
+    const img = new Image();
+    img.onload = () => {
+      arrowImage = img;
+      arrowImageLoaded = true;
+      draw();
+    };
+    img.onerror = () => {
+      arrowImageLoaded = false;
+    };
+    img.src = arrowIconUrl;
+  })();
+
   const MIN_SCALE = 0.02;
   const MAX_SCALE = 300;
   const GRID_STEPS = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096];
@@ -96,8 +110,8 @@ export function createMap2DController(container, options = {}) {
 
   const HIT_RADIUS_PX = 6; // クリック/ホバー判定の画面上の許容半径(px)
   const CLICK_MOVE_THRESHOLD_PX = 5; // これ未満の移動ならドラッグではなくクリックとみなす
-  const ARROW_SIZE = 8; // 矢印アイコンのサイズ(px)
-  const ARROW_SPACING = 20; // 矢印間のスペーシング(px)
+  const ARROW_SIZE = 9; // 矢印アイコンのサイズ(px)
+  const ARROW_SPACING = 9; // 矢印間のスペーシング(px)
 
   function resize() {
     canvas.width = container.clientWidth;
@@ -453,34 +467,21 @@ export function createMap2DController(container, options = {}) {
     }
   }
 
-
-  (function loadArrowImage() {
-  const img = new Image();
-  img.onload = () => {
-    arrowImage = img;
-    arrowImageLoaded = true;
-    draw(); // 読み込み完了時点で描き直す(それまでは矢印が出ないか、旧描画のまま)
-  };
-  img.src = arrowIconUrl;
-})();
-
   /**
-   * 矢印アイコンを描画(三角形)
-   * x, y: 位置、angle: 回転角(ラジアン)、size: サイズ、color: 色
+   * 矢印アイコンを描画(外部画像)
+   * x, y: 位置、angle: 回転角(ラジアン)、size: サイズ(画像の一辺の長さ)
+   * 画像は「右向き(+X方向, angle=0)」を基準に用意すること。
    */
-  function drawArrowIcon(x, y, angle, size, color) {
-  if (!arrowImageLoaded) return; // ロード完了前は何も描かない(お好みでフォールバック可)
+  function drawArrowIcon(x, y, angle, size) {
+    if (!arrowImageLoaded) return; // 読み込み完了前は何も描かない
 
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate(angle);
-  ctx.imageSmoothingEnabled = false; // ドット絵ならぼやけ防止(通常の画像ならtrueのままでOK)
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.drawImage(arrowImage, -size / 2, -size / 2, size, size);
+    ctx.restore();
+  }
 
-  // 画像の中心が (x, y) に来るように、左上を -size/2 にずらして描画
-  ctx.drawImage(arrowImage, -size / 2, -size / 2, size, size);
-
-  ctx.restore();
-}
   /**
    * 経路全体に沿って矢印テクスチャを描画する
    * reversed フラグに基づいて矢印の向きを調整
@@ -525,7 +526,7 @@ export function createMap2DController(container, options = {}) {
           const arrowX = sx1 + dx * t;
           const arrowY = sz1 + dz * t;
 
-          drawArrowIcon(arrowX, arrowY, angle, ARROW_SIZE, colors.route);
+          drawArrowIcon(arrowX, arrowY, angle, ARROW_SIZE);
         }
       }
     }
@@ -630,6 +631,7 @@ export function createMap2DController(container, options = {}) {
     }
     
     // 経路の矢印を描画
+    ctx.imageSmoothingEnabled = false;
     drawDirectionalArrowsAlongPath();
     
     for (const seg of selectedSegs) drawSegment(seg);
