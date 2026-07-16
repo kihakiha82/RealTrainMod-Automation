@@ -25,7 +25,7 @@
  *   ユーザー操作で選択セグメント集合(seg.idのSet)が変わった時に呼ばれる。
  *   React側(App.jsx)のstateへ橋渡しする想定。
  */
-import arrowIconUrl from '../assets/routed_arrow.png';
+import arrowIconUrl from '../assets/routed_arrow.svg';
 
 export function createMap2DController(container, options = {}) {
   const { onSelectionChange, onContextMenu } = options;
@@ -103,7 +103,7 @@ export function createMap2DController(container, options = {}) {
       line: get('--line', '#232a32'),
       text: get('--text-dim', '#7d8893'),
       select: get('--select', '#4da3ff'),
-      route: get('--route', '#ffb700'), // 経路ハイライト色(デフォルト: オレンジ)
+      route: get('--route', '#ffffff'), // 経路ハイライト色(デフォルト: オレンジ)
     };
   }
   const colors = readColors();
@@ -111,7 +111,7 @@ export function createMap2DController(container, options = {}) {
   const HIT_RADIUS_PX = 6; // クリック/ホバー判定の画面上の許容半径(px)
   const CLICK_MOVE_THRESHOLD_PX = 5; // これ未満の移動ならドラッグではなくクリックとみなす
   const ARROW_SIZE = 9; // 矢印アイコンのサイズ(px)
-  const ARROW_SPACING = 9; // 矢印間のスペーシング(px)
+  const ARROW_SPACING = 20; // 矢印間のスペーシング(px)
 
   function resize() {
     canvas.width = container.clientWidth;
@@ -442,7 +442,7 @@ export function createMap2DController(container, options = {}) {
       else ctx.lineTo(x, z);
     });
     ctx.strokeStyle = color;
-    ctx.lineWidth = (seg.isPoint ? 3 : 2) + (selected ? 2 : inRoute ? 1.5 : hovered ? 1 : 0);
+    ctx.lineWidth = (seg.isPoint ? 3 : 2) + (selected ? 2 : inRoute ? 8 : hovered ? 1 : 0);
     ctx.stroke();
 
     // 選択されていないセグメントのティック表示
