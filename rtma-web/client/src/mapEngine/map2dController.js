@@ -64,7 +64,10 @@ export function createMap2DController(container, options = {}) {
   // プレイヤー顔アイコンの読み込み状態(プレイヤー名が変わった時だけ再読み込みする)
   let playerImage = null;
   let playerImageKey = null;
+  
+  import arrowIconUrl from '../assets/arrow-icon.png';
   let arrowImage = null;
+  let arrowImageLoaded = false;
   
   const MIN_SCALE = 0.02;
   const MAX_SCALE = 300;
@@ -450,45 +453,34 @@ export function createMap2DController(container, options = {}) {
     }
   }
 
-  function drawArrowTexture(x, y, angle, size) {
-    const img = new Image();
-    img.onload = () => {
-      arrowImage = img;
-      draw();
-    };
-    img.onerror = () => {
-      arrowImage = null;
-    };
-    img.src = `/images/players/arrowRouted.png`;
-    
-  }
+
+  (function loadArrowImage() {
+  const img = new Image();
+  img.onload = () => {
+    arrowImage = img;
+    arrowImageLoaded = true;
+    draw(); // 読み込み完了時点で描き直す(それまでは矢印が出ないか、旧描画のまま)
+  };
+  img.src = arrowIconUrl;
+})();
 
   /**
    * 矢印アイコンを描画(三角形)
    * x, y: 位置、angle: 回転角(ラジアン)、size: サイズ、color: 色
    */
   function drawArrowIcon(x, y, angle, size, color) {
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(angle);
-    
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    // 三角形: 先端→左→右
-    ctx.moveTo(size / 2, 0); // 先端
-    ctx.lineTo(-size / 2, -size / 2); // 左
-    ctx.lineTo(-size / 2, size / 2); // 右
-    ctx.closePath();
-    ctx.fill();
-    
-    // アウトライン
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    
-    ctx.restore();
-  }
+  if (!arrowImageLoaded) return; // ロード完了前は何も描かない(お好みでフォールバック可)
 
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.imageSmoothingEnabled = false; // ドット絵ならぼやけ防止(通常の画像ならtrueのままでOK)
+
+  // 画像の中心が (x, y) に来るように、左上を -size/2 にずらして描画
+  ctx.drawImage(arrowImage, -size / 2, -size / 2, size, size);
+
+  ctx.restore();
+}
   /**
    * 経路全体に沿って矢印テクスチャを描画する
    * reversed フラグに基づいて矢印の向きを調整
