@@ -1,15 +1,23 @@
 /**
  * rails.json由来のセグメント配列から隣接グラフを構築し、
- * 「始点セグメント→終点セグメント」の経路を、実際のレール長(seg.length)の合計が
- * 最小になるように探索する(Dijkstra)。
+ * 「始点→終点」の経路を、実際のレール長の合計が最小になるように探索する(Dijkstra)。
  *
- * 経路は選択(選択ハイライトそのもの)には依存せず、始点・終点の2つのセグメントIDだけで
- * 一意に決まる設計にしている(右クリックメニューの「点を設定」「終点を設定」で
- * マークしたセグメントIDを渡す想定)。
+ * v2: 始点・終点は「セグメント全体」ではなく、
+ *   { segId: string, s: number }  (segId自身の座標系で、startからの距離。0〜seg.length)
+ * という「セグメント上のどこか一点」で指定できる。
  *
- * 戻り値は { id, reversed }[] で、calc側(orderedRouteResolver.js)がこれを実体化して
- * buildRouteProfile()に渡す。reversed:true は「そのセグメントをstart→endではなく
- * end→startの向きで通る」ことを意味する。
+ * グラフの組み方を「物理座標をノード、セグメントをエッジ」という素直な形に変更し、
+ * 始点・終点はその座標グラフに挿入する仮想ノードとして表現する:
+ *
+ *   [接続ノードA] --(距離 a)-- ★始点(仮想ノード) --(距離 b)-- [接続ノードB]
+ *                                                    (a + b = seg.length)
+ *
+ * 戻り値は { id, reversed, sStart?, sEnd? }[] で、calc側(orderedRouteResolver.js)が
+ * これを実体化してbuildRouteProfile()に渡す。
+ *   reversed: true は「そのセグメントをstart→endではなくend→startの向きで通る」ことを意味する。
+ *   sStart/sEnd: 経路の先頭・末尾のセグメントだけに付き、
+ *                「そのセグメント自身の座標系(reversedに関係なく)」でのトリム範囲を表す。
+ *                省略時(中間セグメント)はセグメント全体を使う。
  */
 
 /** 座標を丸めて文字列化する(Mod側RailMapConverter#formatPointと同じ丸め方に揃える) */
@@ -52,80 +60,139 @@ function buildRailGraph(segments) {
   return { byId, segNodes, nodeToSegIds };
 }
 
+const V_START = Symbol('routeStart');
+const V_END = Symbol('routeEnd');
+
 /**
- * startId〜endId間の最短経路(セグメント長の合計が最小)を探す。
+ * routeStart, routeEnd: { segId: string, s: number }
+ *   segId: 経路の始点・終点とするセグメントのid
+ *   s: そのセグメント自身の座標系(start=0)で、始点/終点までの距離(0〜seg.length)
  *
- * segments: RailSegment[](rails.jsonそのまま)
- * startId, endId: 経路の始点・終点とするセグメントのid
- *
- * 戻り値: { id: string, reversed: boolean }[](start→endの順) | null(到達不可/idが存在しない場合)
+ * 戻り値: { id, reversed, sStart?, sEnd? }[](start→endの順) | null(到達不可/idが存在しない場合)
  */
-export function findRailRoute(segments, startId, endId) {
+export function findRailRoute(segments, routeStart, routeEnd) {
   const { byId, segNodes, nodeToSegIds } = buildRailGraph(segments);
 
-  if (!byId.has(startId) || !byId.has(endId)) return null;
-  if (startId === endId) return [{ id: startId, reversed: false }];
+  const startSeg = byId.get(routeStart?.segId);
+  const endSeg = byId.get(routeEnd?.segId);
+  if (!startSeg || !endSeg) return null;
 
-  // Dijkstra: セグメントをノードとみなし、「隣のセグメントに移る」コストをそのセグメントの
-  // length(自身を含めた累積距離)として最短経路を求める。
-  // 優先度キューの代わりに配列+都度ソートを使っている(想定セグメント数は数百〜数千程度で十分実用的)。
-  const dist = new Map([[startId, 0]]);
-  const cameFrom = new Map(); // id -> { prevId, connectionNode }(その手前のセグメント・接続点)
+  const startSegLen = startSeg.length ?? 0;
+  const endSegLen = endSeg.length ?? 0;
+
+  // 特殊ケース: 始点・終点が同じセグメント上 → グラフ探索せず、その区間だけを返す
+  if (routeStart.segId === routeEnd.segId) {
+    const sLo = Math.min(routeStart.s, routeEnd.s);
+    const sHi = Math.max(routeStart.s, routeEnd.s);
+    return [{
+      id: routeStart.segId,
+      reversed: routeEnd.s < routeStart.s,
+      sStart: sLo,
+      sEnd: sHi,
+    }];
+  }
+
+  const { startNode: startSegStartNode, endNode: startSegEndNode } = segNodes.get(startSeg.id);
+  const { startNode: endSegStartNode, endNode: endSegEndNode } = segNodes.get(endSeg.id);
+
+  /** あるノードから出ているエッジ一覧 { to, weight, segId } を返す */
+  function edgesFrom(node) {
+    if (node === V_START) {
+      // 始点セグメントを、クリック位置で両側に割った2本の仮想エッジ
+      return [
+        { to: startSegStartNode, weight: routeStart.s, segId: startSeg.id },
+        { to: startSegEndNode, weight: startSegLen - routeStart.s, segId: startSeg.id },
+      ];
+    }
+    if (node === V_END) {
+      return []; // 行き止まり(V_ENDへは他ノードからの片方向エッジでのみ到達させる)
+    }
+
+    const result = [];
+    const segIds = nodeToSegIds.get(node);
+    if (segIds) {
+      for (const segId of segIds) {
+        const seg = byId.get(segId);
+        const { startNode, endNode } = segNodes.get(segId);
+        const other = startNode === node ? endNode : startNode;
+        result.push({ to: other, weight: seg.length ?? 0, segId });
+      }
+    }
+    // このノードが終点セグメントの端点なら、V_ENDへの仮想エッジも足す
+    if (node === endSegStartNode) {
+      result.push({ to: V_END, weight: routeEnd.s, segId: endSeg.id });
+    }
+    if (node === endSegEndNode) {
+      result.push({ to: V_END, weight: endSegLen - routeEnd.s, segId: endSeg.id });
+    }
+    return result;
+  }
+
+  // Dijkstra(物理ノード + 仮想ノード V_START/V_END のグラフ上)
+  const dist = new Map([[V_START, 0]]);
+  const cameFrom = new Map(); // node -> { fromNode, segId }(このノードに来る際に通ったセグメント)
   const visited = new Set();
-  const queue = [startId];
+  const queue = [V_START];
 
   while (queue.length > 0) {
     queue.sort((a, b) => dist.get(a) - dist.get(b));
-    const currentId = queue.shift();
-    if (visited.has(currentId)) continue;
-    visited.add(currentId);
-    if (currentId === endId) break;
+    const current = queue.shift();
+    if (visited.has(current)) continue;
+    visited.add(current);
+    if (current === V_END) break;
 
-    const { startNode, endNode } = segNodes.get(currentId);
-    for (const node of [startNode, endNode]) {
-      const neighborIds = nodeToSegIds.get(node);
-      if (!neighborIds) continue;
-      for (const neighborId of neighborIds) {
-        if (neighborId === currentId || visited.has(neighborId)) continue;
-        const neighbor = byId.get(neighborId);
-        const newDist = dist.get(currentId) + (neighbor.length ?? 0);
-        if (!dist.has(neighborId) || newDist < dist.get(neighborId)) {
-          dist.set(neighborId, newDist);
-          cameFrom.set(neighborId, { prevId: currentId, connectionNode: node });
-          queue.push(neighborId);
-        }
+    for (const edge of edgesFrom(current)) {
+      if (visited.has(edge.to)) continue;
+      const newDist = dist.get(current) + edge.weight;
+      if (!dist.has(edge.to) || newDist < dist.get(edge.to)) {
+        dist.set(edge.to, newDist);
+        cameFrom.set(edge.to, { fromNode: current, segId: edge.segId });
+        queue.push(edge.to);
       }
     }
   }
 
-  if (!cameFrom.has(endId)) return null; // 到達不可(選択したレールが繋がっていない等)
+  if (!cameFrom.has(V_END)) return null; // 到達不可(始点・終点が線路で繋がっていない)
 
-  // endId→startIdの順に辿ってから反転し、start→endの順のセグメント列にする
-  const chain = [];
-  let cursor = endId;
-  while (cursor !== startId) {
+  // V_END → V_START の順に辿ってから反転し、各ホップ(1セグメント分の通過)の列にする
+  const hops = [];
+  let cursor = V_END;
+  while (cursor !== V_START) {
     const step = cameFrom.get(cursor);
-    chain.push({ id: cursor, connectionNodeBefore: step.connectionNode });
-    cursor = step.prevId;
+    hops.push({ toNode: cursor, fromNode: step.fromNode, segId: step.segId });
+    cursor = step.fromNode;
   }
-  chain.push({ id: startId, connectionNodeBefore: null });
-  chain.reverse();
+  hops.reverse();
 
-  // 各セグメントについて、前後どちらの接続点を使っているかからreversedを決定する
-  return chain.map((entry, i) => {
-    const { startNode, endNode } = segNodes.get(entry.id);
-    const connectionAfter = i < chain.length - 1 ? chain[i + 1].connectionNodeBefore : null;
-    const connectionBefore = entry.connectionNodeBefore;
+  return hops.map((hop, i) => {
+    const isFirst = i === 0;
+    const isLast = i === hops.length - 1;
+    const { startNode } = segNodes.get(hop.segId);
 
-    let reversed = false;
-    if (connectionAfter != null) {
-      // 次のセグメントへの接続点が自分のendNodeなら順方向(start→end)、
-      // startNodeなら逆方向(end→start)で通ることになる
-      reversed = startNode === connectionAfter;
-    } else if (connectionBefore != null) {
-      // 最後のセグメント: 前のセグメントからの接続点が自分のstartNodeなら順方向
-      reversed = endNode === connectionBefore;
+    if (isFirst) {
+      // V_START → 実ノード: 始点セグメントの部分区間(クリック位置〜到達したノード)
+      const wentToOwnStart = hop.toNode === startNode; // 自身のstartNode側に向かった = end→start方向
+      return {
+        id: hop.segId,
+        reversed: wentToOwnStart,
+        sStart: wentToOwnStart ? 0 : routeStart.s,
+        sEnd: wentToOwnStart ? routeStart.s : startSegLen,
+      };
     }
-    return { id: entry.id, reversed };
+
+    if (isLast) {
+      // 実ノード → V_END: 終点セグメントの部分区間(到達したノード〜クリック位置)
+      const cameFromOwnStart = hop.fromNode === startNode; // 自身のstartNode側から来た = start→end方向
+      return {
+        id: hop.segId,
+        reversed: !cameFromOwnStart,
+        sStart: cameFromOwnStart ? 0 : routeEnd.s,
+        sEnd: cameFromOwnStart ? routeEnd.s : endSegLen,
+      };
+    }
+
+    // 中間セグメント: 全区間を通過。自身のstartNodeに"到達"した = end→start方向に通った
+    const reversed = hop.toNode === startNode;
+    return { id: hop.segId, reversed };
   });
 }
