@@ -18,14 +18,18 @@
  *   - マウスホイール = ズーム(カーソル中心)
  *   - 右クリック(セグメント上) = コンテキストメニューを開く要求をonContextMenuで通知する
  *     (メニューの中身自体はReact側(ContextMenu.jsx)が持つ。ここではヒット判定と選択状態の
- *     調整のみ行う)
+ *     調整、およびクリック位置をそのセグメント上の点(railPoint: { segId, s, x, z })に
+ *     変換して一緒に渡す処理を行う。sはそのセグメント自身の座標系でのstartからの距離)
+ *
+ * 簡易運行の始点/終点(setRouteStart/setRouteEnd)は、レール上の任意の点
+ * ({ segId, s, x, z })として設定でき、緑(始点)/赤(終点)の丸マーカーで表示される。
  * グリッドは1,2,4,8,16(1チャンク),32...ブロックの中からズームに応じて自動選択する。
  *
  * options.onSelectionChange: (Set<string>) => void
  *   ユーザー操作で選択セグメント集合(seg.idのSet)が変わった時に呼ばれる。
  *   React側(App.jsx)のstateへ橋渡しする想定。
  */
-import arrowIconUrl from '../assets/routed_arrow.svg';
+import arrowIconUrl from '../assets/arrow-icon.svg';
 
 export function createMap2DController(container, options = {}) {
   const { onSelectionChange, onContextMenu } = options;
@@ -39,6 +43,8 @@ export function createMap2DController(container, options = {}) {
     segments: [],
     player: null,
     routePath: null, // { id, reversed }[]
+    routeStart: null, // { segId, s, x, z } | null(レール途中の始点)
+    routeEnd: null,   // { segId, s, x, z } | null(レール途中の終点)
     scale: 1,
     offsetX: 0,
     offsetZ: 0,
@@ -103,15 +109,16 @@ export function createMap2DController(container, options = {}) {
       line: get('--line', '#232a32'),
       text: get('--text-dim', '#7d8893'),
       select: get('--select', '#4da3ff'),
-      route: get('--route', '#ffffff'), // 経路ハイライト色(デフォルト: オレンジ)
+      route: get('--route', '#ffb700'), // 経路ハイライト色(デフォルト: オレンジ)
     };
   }
   const colors = readColors();
 
   const HIT_RADIUS_PX = 6; // クリック/ホバー判定の画面上の許容半径(px)
   const CLICK_MOVE_THRESHOLD_PX = 5; // これ未満の移動ならドラッグではなくクリックとみなす
-  const ARROW_SIZE = 9; // 矢印アイコンのサイズ(px)
+  const ARROW_SIZE = 8; // 矢印アイコンのサイズ(px)
   const ARROW_SPACING = 20; // 矢印間のスペーシング(px)
+  const ROUTE_POINT_RADIUS = 7; // 始点/終点マーカーの半径(px)
 
   function resize() {
     canvas.width = container.clientWidth;
@@ -192,6 +199,42 @@ export function createMap2DController(container, options = {}) {
     return best;
   }
 
+  /**
+   * ワールド座標(wx, wz)に最も近い、seg自身のポリライン(samples)上の点を求める。
+   * 始点/終点をレール途中に設定する機能で、クリック位置→セグメント内距離(s)への
+   * 変換に使う(railGraph.jsのs(セグメント自身の座標系での距離)と対応)。
+   *
+   * 戻り値: { x, z, s, dist } | null(pointsが2点未満で計算不能な場合)
+   *   s: seg開始点(points[0])からの累積距離(ブロック)
+   */
+  function projectOntoSegment(seg, wx, wz) {
+    const points = pointsOf(seg);
+    if (points.length < 2) return null;
+
+    let best = null;
+    let cumulative = 0;
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = points[i], b = points[i + 1];
+      const dx = b.x - a.x, dz = b.z - a.z;
+      const lenSq = dx * dx + dz * dz;
+      const segLen = Math.sqrt(lenSq);
+
+      let t = 0;
+      if (lenSq > 0) {
+        t = ((wx - a.x) * dx + (wz - a.z) * dz) / lenSq;
+        t = Math.max(0, Math.min(1, t));
+      }
+      const px = a.x + dx * t;
+      const pz = a.z + dz * t;
+      const dist = Math.hypot(wx - px, wz - pz);
+      const s = cumulative + segLen * t;
+
+      if (!best || dist < best.dist) best = { x: px, z: pz, s, dist };
+      cumulative += segLen;
+    }
+    return best;
+  }
+
   /** 画面座標(screenX, screenZ)にもっとも近いセグメントを、当たり判定半径内から探す */
   function pickSegmentAt(screenX, screenZ) {
     const [wx, wz] = toWorld(screenX, screenZ);
@@ -246,7 +289,9 @@ export function createMap2DController(container, options = {}) {
   function onContextMenuEvent(e) {
     e.preventDefault(); // ブラウザ標準の右クリックメニューを抑止
     const rect = canvas.getBoundingClientRect();
-    const hit = pickSegmentAt(e.clientX - rect.left, e.clientY - rect.top);
+    const clickScreenX = e.clientX - rect.left;
+    const clickScreenY = e.clientY - rect.top;
+    const hit = pickSegmentAt(clickScreenX, clickScreenY);
 
     if (!hit) {
       onContextMenu?.(null);
@@ -255,10 +300,17 @@ export function createMap2DController(container, options = {}) {
     if (!state.selectedIds.has(hit.id)) {
       applySelection(new Set([hit.id]));
     }
+
+    // クリック位置に一番近い、hit上の点(始点/終点をレール途中に設定する機能で使う)
+    const [wx, wz] = toWorld(clickScreenX, clickScreenY);
+    const proj = projectOntoSegment(hit, wx, wz);
+    const railPoint = proj ? { segId: hit.id, s: proj.s, x: proj.x, z: proj.z } : null;
+
     onContextMenu?.({
       x: e.clientX,
       y: e.clientY,
       targetIds: Array.from(state.selectedIds),
+      railPoint,
     });
   }
 
@@ -442,7 +494,7 @@ export function createMap2DController(container, options = {}) {
       else ctx.lineTo(x, z);
     });
     ctx.strokeStyle = color;
-    ctx.lineWidth = (seg.isPoint ? 3 : 2) + (selected ? 2 : inRoute ? 8 : hovered ? 1 : 0);
+    ctx.lineWidth = (seg.isPoint ? 3 : 2) + (selected ? 2 : inRoute ? 1.5 : hovered ? 1 : 0);
     ctx.stroke();
 
     // 選択されていないセグメントのティック表示
@@ -595,6 +647,35 @@ export function createMap2DController(container, options = {}) {
     }
   }
 
+  /** 始点/終点マーカーを1つ描画する(円+ラベル) */
+  function drawRoutePointMarker(point, label, fillColor) {
+    if (!point) return;
+    const [sx, sz] = toScreen(point.x, point.z);
+    const r = ROUTE_POINT_RADIUS;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(sx, sz, r, 0, Math.PI * 2);
+    ctx.fillStyle = fillColor;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = colors.panel;
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.font = 'bold 11px "JetBrains Mono", "SFMono-Regular", Consolas, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillStyle = colors.text;
+    ctx.fillText(label, sx, sz - r - 4);
+  }
+
+  /** 簡易運行の始点/終点マーカーをまとめて描画する */
+  function drawRoutePointMarkers() {
+    drawRoutePointMarker(state.routeStart, '始点', colors.main);
+    drawRoutePointMarker(state.routeEnd, '終点', colors.idle);
+  }
+
   /** 矩形選択中、ドラッグ範囲を半透明の矩形として表示する */
   function drawSelectionRect() {
     if (!state.rectSelecting) return;
@@ -631,12 +712,12 @@ export function createMap2DController(container, options = {}) {
     }
     
     // 経路の矢印を描画
-    ctx.imageSmoothingEnabled = false;
     drawDirectionalArrowsAlongPath();
     
     for (const seg of selectedSegs) drawSegment(seg);
     
     drawPlayer();
+    drawRoutePointMarkers();
     drawSelectionRect();
     drawRulers();
   }
@@ -795,6 +876,16 @@ export function createMap2DController(container, options = {}) {
     /** 経路セグメント列({ id, reversed }[])を更新する。nullで非表示にできる */
     setRoutePath(routePath) {
       state.routePath = routePath || null;
+      draw();
+    },
+    /** 簡易運行の始点({ segId, s, x, z })を更新する。nullで非表示にできる */
+    setRouteStart(point) {
+      state.routeStart = point || null;
+      draw();
+    },
+    /** 簡易運行の終点({ segId, s, x, z })を更新する。nullで非表示にできる */
+    setRouteEnd(point) {
+      state.routeEnd = point || null;
       draw();
     },
     /** ワールド座標(x, z)を画面中心にして表示する。scale省略時はデフォルト倍率を使う */
