@@ -62,6 +62,14 @@ export default function App() {
     console.log('[ContextMenu] action:', itemId, 'targets:', targetIds);
   }
 
+  /** 始点/終点マーカーをドラッグして位置が確定した時に呼ばれる */
+  function handleRoutePointDrag(role, point) {
+    if (role === 'start') setRouteStart(point);
+    else setRouteEnd(point);
+    setRouteResult(null); // 位置が変わったら前回の計算結果・経路は無効
+    setRoutePath(null);
+  }
+
   /** 簡易運行: 現在の始点/終点からrailGraphで経路を求め、/api/route-profileへ渡す */
   async function handleComputeRoute() {
     if (!routeStart || !routeEnd) return;
@@ -378,6 +386,7 @@ export default function App() {
               routeEnd={routeEnd}
               onSelectionChange={setSelectedIds}
               onContextMenuAction={handleRailContextMenuAction}
+              onRoutePointChange={handleRoutePointDrag}
               ref={mapRef}
           />
           {!isServerRunning && (
