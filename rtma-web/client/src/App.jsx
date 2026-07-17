@@ -17,9 +17,10 @@ export default function App() {
   const [serverSnapshot, setServerSnapshot] = useState(null);
   // 選択中レール(seg.id)のSet。将来のプロパティパネル等、選択を使う機能はここを参照する想定
   const [selectedIds,    setSelectedIds]    = useState(() => new Set());
-  // 簡易運行: 右クリックメニュー「点を設定」「終点を設定」でマークしたセグメントid
-  const [routeStartId,   setRouteStartId]   = useState(null);
-  const [routeEndId,     setRouteEndId]     = useState(null);
+  // 簡易運行: 右クリックメニュー「始点を設定」「終点を設定」でマークした、レール上の点。
+  // { segId, s, x, z } | null (s: そのセグメント自身の座標系でのstartからの距離)
+  const [routeStart,     setRouteStart]     = useState(null);
+  const [routeEnd,       setRouteEnd]       = useState(null);
   // 経路計算(/api/route-profile)の結果。{ ok, totalLength, pointCount } | { error } | null
   const [routeResult,    setRouteResult]    = useState(null);
   const [isComputingRoute, setIsComputingRoute] = useState(false);
@@ -41,18 +42,19 @@ export default function App() {
   /**
    * レール右クリックメニューの項目が実行された時に呼ばれる。
    * itemIdはmapEngine/contextMenuSchema.jsで定義したid(例: 'simple-operation:set-start-point')。
-   * 「点を設定」「終点を設定」だけ実処理(簡易運行の始点/終点セグメントを記憶する)を行い、
+   * railPointはクリック位置に一番近い、対象セグメント上の点({ segId, s, x, z })。
+   * 「始点を設定」「終点を設定」だけ実処理(簡易運行の始点/終点を記憶する)を行い、
    * それ以外(「点の編集」「レール情報の表示」)はまだ見た目のみ(プレースホルダー)。
    */
-  function handleRailContextMenuAction(itemId, targetIds) {
+  function handleRailContextMenuAction(itemId, targetIds, railPoint) {
     if (itemId === 'simple-operation:set-start-point') {
-      setRouteStartId(targetIds[0] ?? null);
+      setRouteStart(railPoint ?? null);
       setRouteResult(null); // 始点/終点が変わったら前回の計算結果は無効なのでクリアする
       setRoutePath(null);   // 経路もクリア
       return;
     }
     if (itemId === 'simple-operation:set-end-point') {
-      setRouteEndId(targetIds[0] ?? null);
+      setRouteEnd(railPoint ?? null);
       setRouteResult(null);
       setRoutePath(null);
       return;
@@ -62,12 +64,12 @@ export default function App() {
 
   /** 簡易運行: 現在の始点/終点からrailGraphで経路を求め、/api/route-profileへ渡す */
   async function handleComputeRoute() {
-    if (!routeStartId || !routeEndId) return;
+    if (!routeStart || !routeEnd) return;
     setIsComputingRoute(true);
     setRouteResult(null);
     setRoutePath(null);
     try {
-      const route = findRailRoute(segments, routeStartId, routeEndId);
+      const route = findRailRoute(segments, routeStart, routeEnd);
       if (!route) {
         setRouteResult({ error: '始点と終点が線路で繋がっていません' });
         return;
@@ -328,13 +330,13 @@ export default function App() {
                 </button>
               </div>
           )}
-          {(routeStartId || routeEndId) && (
+          {(routeStart || routeEnd) && (
               <div className="topbar__status">
-                簡易運行: 始点{routeStartId ? '✓' : '未設定'} / 終点{routeEndId ? '✓' : '未設定'}
+                簡易運行: 始点{routeStart ? '✓' : '未設定'} / 終点{routeEnd ? '✓' : '未設定'}
                 <button
                     className="mode-btn"
                     style={{ marginLeft: 8 }}
-                    disabled={!routeStartId || !routeEndId || isComputingRoute}
+                    disabled={!routeStart || !routeEnd || isComputingRoute}
                     onClick={handleComputeRoute}
                 >
                   {isComputingRoute ? '計算中...' : '経路を計算'}
@@ -342,7 +344,7 @@ export default function App() {
                 <button
                     className="mode-btn"
                     style={{ marginLeft: 4 }}
-                    onClick={() => { setRouteStartId(null); setRouteEndId(null); setRouteResult(null); setRoutePath(null); }}
+                    onClick={() => { setRouteStart(null); setRouteEnd(null); setRouteResult(null); setRoutePath(null); }}
                 >
                   クリア
                 </button>
@@ -372,6 +374,8 @@ export default function App() {
               player={player}
               selectedIds={selectedIds}
               routePath={routePath}
+              routeStart={routeStart}
+              routeEnd={routeEnd}
               onSelectionChange={setSelectedIds}
               onContextMenuAction={handleRailContextMenuAction}
               ref={mapRef}
