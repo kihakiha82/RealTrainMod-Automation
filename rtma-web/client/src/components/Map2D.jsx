@@ -13,12 +13,15 @@ import ContextMenu from './ContextMenu';
  *
  * selectedIds: 選択中セグメントのidのSet(controlled)。
  * routePath: 計算された経路セグメント列({ id, reversed }[])。
+ * routeStart, routeEnd: 簡易運行の始点/終点({ segId, s, x, z } | null)。地図上に丸マーカーで表示される。
  * onSelectionChange: ユーザーのクリック操作で選択が変わった時に呼ばれる((Set) => void)。
- * onContextMenuAction: 右クリックメニューの項目が実行された時に呼ばれる((itemId, targetIds) => void)。
- *   何もしなくても動く(メニュー自体はこのコンポーネント内で開閉が完結する)ので省略可能。
+ * onContextMenuAction: 右クリックメニューの項目が実行された時に呼ばれる
+ *   ((itemId, targetIds, railPoint) => void)。railPointはクリック位置に一番近い、
+ *   対象セグメント上の点({ segId, s, x, z })。何もしなくても動く(メニュー自体はこの
+ *   コンポーネント内で開閉が完結する)ので省略可能。
  */
 const Map2D = forwardRef(function Map2D(
-  { segments, player, selectedIds, routePath, onSelectionChange, onContextMenuAction },
+  { segments, player, selectedIds, routePath, routeStart, routeEnd, onSelectionChange, onContextMenuAction },
   ref
 ) {
   const containerRef = useRef(null);
@@ -30,7 +33,7 @@ const Map2D = forwardRef(function Map2D(
   const onContextMenuActionRef = useRef(onContextMenuAction);
   onContextMenuActionRef.current = onContextMenuAction;
 
-  // 右クリックメニューの開閉状態。{ x, y, targetIds } | null
+  // 右クリックメニューの開閉状態。{ x, y, targetIds, railPoint } | null
   const [contextMenu, setContextMenu] = useState(null);
 
   useEffect(() => {
@@ -61,6 +64,14 @@ const Map2D = forwardRef(function Map2D(
     controllerRef.current?.setRoutePath(routePath);
   }, [routePath]);
 
+  useEffect(() => {
+    controllerRef.current?.setRouteStart(routeStart);
+  }, [routeStart]);
+
+  useEffect(() => {
+    controllerRef.current?.setRouteEnd(routeEnd);
+  }, [routeEnd]);
+
   useImperativeHandle(ref, () => ({
     resetView() {
       controllerRef.current?.resetView();
@@ -77,7 +88,7 @@ const Map2D = forwardRef(function Map2D(
           x={contextMenu.x}
           y={contextMenu.y}
           schema={RAIL_CONTEXT_MENU_SCHEMA}
-          onAction={(itemId) => onContextMenuActionRef.current?.(itemId, contextMenu.targetIds)}
+          onAction={(itemId) => onContextMenuActionRef.current?.(itemId, contextMenu.targetIds, contextMenu.railPoint)}
           onClose={() => setContextMenu(null)}
         />
       )}
