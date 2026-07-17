@@ -138,6 +138,42 @@ export function createMap2DController(container, options = {}) {
     ];
   }
 
+  /**
+   * seg自身のポリライン(pointsOf)を、seg自身の座標系(points[0]を距離0とする、2D)での
+   * [sStart, sEnd]の範囲だけに絞った点列を返す。始点/終点をレール途中に設定した経路の
+   * 表示(ハイライト・矢印)で、セグメント全体ではなく実際に通る区間だけを描くのに使う。
+   * (sStart/sEndの由来であるprojectOntoSegmentと同じ2D距離基準)
+   */
+  function pointsInRange(seg, sStart, sEnd) {
+    const points = pointsOf(seg);
+    if (points.length < 2) return points;
+
+    const result = [];
+    let cumulative = 0;
+
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = points[i];
+      const b = points[i + 1];
+      const dx = b.x - a.x;
+      const dz = b.z - a.z;
+      const segLen = Math.hypot(dx, dz);
+      const aS = cumulative;
+      const bS = cumulative + segLen;
+
+      if (bS >= sStart && aS <= sEnd) {
+        const t0 = segLen > 1e-9 ? Math.max(0, (sStart - aS) / segLen) : 0;
+        const t1 = segLen > 1e-9 ? Math.min(1, (sEnd - aS) / segLen) : 1;
+        if (result.length === 0) result.push({ x: a.x + dx * t0, z: a.z + dz * t0 });
+        result.push({ x: a.x + dx * t1, z: a.z + dz * t1 });
+      }
+
+      cumulative = bS;
+      if (cumulative > sEnd) break;
+    }
+
+    return result;
+  }
+
   function fitView() {
     if (state.segments.length === 0) return;
     let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
@@ -182,6 +218,10 @@ export function createMap2DController(container, options = {}) {
   }
   function isInRoute(seg) {
     return state.routePath && state.routePath.some(r => r.id === seg.id);
+  }
+  /** そのセグメントに対応する経路参照({ id, reversed, sStart?, sEnd? })を探す */
+  function findRouteEntry(seg) {
+    return state.routePath ? state.routePath.find(r => r.id === seg.id) : undefined;
   }
 
   /** 点(px,pz)から線分(ax,az)-(bx,bz)への最短距離(ワールド座標系) */
@@ -494,7 +534,12 @@ export function createMap2DController(container, options = {}) {
     const points = pointsOf(seg);
     const selected = isSelected(seg);
     const hovered = isHovered(seg);
-    const inRoute = isInRoute(seg);
+    const routeEntry = findRouteEntry(seg);
+    const isPartialRoute = !!routeEntry && routeEntry.sStart != null && routeEntry.sEnd != null;
+    // セグメント全体が経路に含まれる場合のみ全体をハイライト色にする。
+    // 始点/終点がレール途中にある場合(isPartialRoute)は、実際に通る区間だけを
+    // 後段で上書き描画するので、ベースの見た目は「経路外」のまま扱う。
+    const inRoute = !!routeEntry && !isPartialRoute;
     let color = colorFor(seg);
     
     // 経路内のセグメントはハイライト色で表示
@@ -534,6 +579,22 @@ export function createMap2DController(container, options = {}) {
       }
       ctx.globalAlpha = 1;
     }
+
+    // 始点/終点がレール途中にある場合、実際に通る区間だけを経路色で上書きする
+    if (isPartialRoute) {
+      const rangePoints = pointsInRange(seg, routeEntry.sStart, routeEntry.sEnd);
+      if (rangePoints.length >= 2) {
+        ctx.beginPath();
+        rangePoints.forEach((p, i) => {
+          const [x, z] = toScreen(p.x, p.z);
+          if (i === 0) ctx.moveTo(x, z);
+          else ctx.lineTo(x, z);
+        });
+        ctx.strokeStyle = colors.route;
+        ctx.lineWidth = (seg.isPoint ? 3 : 2) + 1.5;
+        ctx.stroke();
+      }
+    }
   }
 
   /**
@@ -565,7 +626,9 @@ export function createMap2DController(container, options = {}) {
       const seg = state.segments.find(s => s.id === routeEntry.id);
       if (!seg) continue;
 
-      const points = pointsOf(seg);
+      // 始点/終点がレール途中にある場合は、実際に通る区間だけに絞る
+      const hasTrim = routeEntry.sStart != null && routeEntry.sEnd != null;
+      const points = hasTrim ? pointsInRange(seg, routeEntry.sStart, routeEntry.sEnd) : pointsOf(seg);
       if (points.length < 2) continue;
 
       // セグメントの方向を判定
