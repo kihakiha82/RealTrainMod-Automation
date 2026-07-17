@@ -23,6 +23,8 @@
  *
  * 簡易運行の始点/終点(setRouteStart/setRouteEnd)は、レール上の任意の点
  * ({ segId, s, x, z })として設定でき、緑(始点)/赤(終点)の丸マーカーで表示される。
+ * マーカーはドラッグして位置を微調整できる(そのセグメントの線上に拘束される)。
+ * ドラッグ確定時(mouseup)にonRoutePointChange('start'|'end', point)でReact側に通知する。
  * グリッドは1,2,4,8,16(1チャンク),32...ブロックの中からズームに応じて自動選択する。
  *
  * options.onSelectionChange: (Set<string>) => void
@@ -32,7 +34,7 @@
 import arrowIconUrl from '../assets/arrow-icon.svg';
 
 export function createMap2DController(container, options = {}) {
-  const { onSelectionChange, onContextMenu } = options;
+  const { onSelectionChange, onContextMenu, onRoutePointChange } = options;
   const canvas = document.createElement('canvas');
   canvas.style.cursor = 'default';
   canvas.style.display = 'block';
@@ -67,6 +69,9 @@ export function createMap2DController(container, options = {}) {
     pointerOverMap: false,
     selectedIds: new Set(),
     hoveredId: null,
+    // 始点/終点マーカーのドラッグ
+    draggingRole: null,  // 'start' | 'end' | null
+    draggingSegId: null, // ドラッグ中、位置をこのセグメントの線上に拘束する
   };
 
   // プレイヤー顔アイコンの読み込み状態(プレイヤー名が変わった時だけ再読み込みする)
@@ -249,6 +254,18 @@ export function createMap2DController(container, options = {}) {
       }
     }
     return best;
+  }
+
+  /** 画面座標(screenX, screenZ)が始点/終点マーカーの上に乗っているか判定する */
+  function pickRoutePointAt(screenX, screenZ) {
+    const hitRadius = ROUTE_POINT_RADIUS + 3; // マーカー本体より少し広めに当たり判定を取る
+    const candidates = [['start', state.routeStart], ['end', state.routeEnd]];
+    for (const [role, point] of candidates) {
+      if (!point) continue;
+      const [sx, sz] = toScreen(point.x, point.z);
+      if (Math.hypot(screenX - sx, screenZ - sz) <= hitRadius) return role;
+    }
+    return null;
   }
 
   /** 選択状態を更新し、再描画とonSelectionChangeへの通知を行う */
@@ -739,6 +756,18 @@ export function createMap2DController(container, options = {}) {
       return;
     }
     if (e.button === 0) {
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const role = pickRoutePointAt(mx, my);
+      if (role) {
+        // 始点/終点マーカーのドラッグ開始(通常の選択操作は行わない)
+        const point = role === 'start' ? state.routeStart : state.routeEnd;
+        state.draggingRole = role;
+        state.draggingSegId = point.segId;
+        canvas.style.cursor = 'grabbing';
+        return;
+      }
       // 左クリック = 選択操作の開始(実際に選択/矩形選択どちらになるかはmousemoveの移動量で決まる)
       state.leftPressActive = true;
       state.leftDownScreenX = e.clientX;
@@ -752,6 +781,21 @@ export function createMap2DController(container, options = {}) {
       state.offsetX = state.dragStartOffsetX + (e.clientX - state.dragStartScreenX);
       state.offsetZ = state.dragStartOffsetZ + (e.clientY - state.dragStartScreenY);
       draw();
+      return;
+    }
+    if (state.draggingRole) {
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const [wx, wz] = toWorld(mx, my);
+      const seg = state.segments.find((s) => s.id === state.draggingSegId);
+      const proj = seg ? projectOntoSegment(seg, wx, wz) : null;
+      if (proj) {
+        const point = { segId: state.draggingSegId, s: proj.s, x: proj.x, z: proj.z };
+        if (state.draggingRole === 'start') state.routeStart = point;
+        else state.routeEnd = point;
+        draw();
+      }
       return;
     }
     if (state.leftPressActive) {
@@ -776,6 +820,16 @@ export function createMap2DController(container, options = {}) {
     const mx = clientX - rect.left;
     const my = clientY - rect.top;
     const inBounds = mx >= 0 && my >= 0 && mx <= canvas.width && my <= canvas.height;
+
+    if (inBounds && pickRoutePointAt(mx, my)) {
+      canvas.style.cursor = 'grab';
+      if (state.hoveredId !== null) {
+        state.hoveredId = null;
+        draw();
+      }
+      return;
+    }
+
     const hit = inBounds ? pickSegmentAt(mx, my) : null;
     const newHoverId = hit ? hit.id : null;
     if (newHoverId !== state.hoveredId) {
@@ -789,6 +843,15 @@ export function createMap2DController(container, options = {}) {
     if (state.panning && e.button === 1) {
       state.panning = false;
       canvas.style.cursor = state.hoveredId ? 'pointer' : 'default';
+      return;
+    }
+    if (state.draggingRole) {
+      const role = state.draggingRole;
+      const point = role === 'start' ? state.routeStart : state.routeEnd;
+      state.draggingRole = null;
+      state.draggingSegId = null;
+      canvas.style.cursor = 'default';
+      onRoutePointChange?.(role, point); // ここで初めてReact側のstateへ確定反映する
       return;
     }
     if (!state.leftPressActive) return;
