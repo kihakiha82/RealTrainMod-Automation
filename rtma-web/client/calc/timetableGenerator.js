@@ -96,8 +96,21 @@ function tickToClock(tick) {
   return { hour, minute, second };
 }
 
+/**
+ * 時:分:秒を、その日の0時からの累積tickに変換する。tickToClock()の逆関数。
+ * 出発時刻の入力(UI上の時:分:秒)をgenerateTimetable()のstartTickに変換するのに使う。
+ * 日をまたぐ経路の場合、到着tickは86400秒(=20*86400 tick)を超えた値になり得るが、
+ * それ自体は正しい挙動(1日の範囲に丸めない)。日をまたいだかどうかはtick自体から
+ * 呼び出し側でMath.floor(tick / TICKS_PER_SECOND / 86400)により判定できる。
+ */
+function clockToTick(hour, minute, second) {
+  const totalSeconds = hour * 3600 + minute * 60 + second;
+  return totalSeconds * TICKS_PER_SECOND;
+}
+
 module.exports = {
   generateTimetable,
   tickToClock,
+  clockToTick,
   TICKS_PER_SECOND,
 };

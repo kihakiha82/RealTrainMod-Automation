@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Map2D from './components/Map2D';
 import TimeEditor from './components/TimeEditor';
-import { fetchRails, fetchPlayerPosition, fetchTime, saveTime, fetchRouteProfile } from './api';
+import { fetchRails, fetchPlayerPosition, fetchTime, saveTime, fetchRouteProfile, fetchTrainSpecs, fetchSimpleSchedule, saveTimetable } from './api';
 import { extrapolateTime, extrapolateFullDateTime, formatDateTime } from './timeUtils';
 import { findRailRoute } from './mapEngine/railGraph';
 
@@ -27,6 +27,16 @@ export default function App() {
   // 計算された経路セグメント列。{ id, reversed }[] | null
   const [routePath,      setRoutePath]      = useState(null);
 
+  // 簡易スタフ: 車両一覧(trainspecs.json)、選択中の車両、出発時刻、計算結果
+  const [trainSpecs,     setTrainSpecs]     = useState(null); // { [resourceName]: spec } | null
+  const [selectedTrain,  setSelectedTrain]  = useState('');
+  const [departureTime,  setDepartureTime]  = useState({ hour: 8, minute: 0, second: 0 });
+  const [schedule,       setSchedule]       = useState(null); // /api/simple-scheduleの戻り値 | null
+  const [isComputingSchedule, setIsComputingSchedule] = useState(false);
+  const [scheduleError,  setScheduleError]  = useState(null);
+  const [saveStaffName,  setSaveStaffName]  = useState('');
+  const [saveStaffStatus,setSaveStaffStatus]= useState(null); // 'saving' | 'saved' | 'error' | null
+
   const mapRef          = useRef(null);
   const hasCenteredRef  = useRef(false);
   // player.jsonのゲーム状態をtimeSnapshotへ橋渡しするref
@@ -51,12 +61,16 @@ export default function App() {
       setRouteStart(railPoint ?? null);
       setRouteResult(null); // 始点/終点が変わったら前回の計算結果は無効なのでクリアする
       setRoutePath(null);   // 経路もクリア
+      setSchedule(null);    // 簡易スタフも無効
+      setSaveStaffStatus(null);
       return;
     }
     if (itemId === 'simple-operation:set-end-point') {
       setRouteEnd(railPoint ?? null);
       setRouteResult(null);
       setRoutePath(null);
+      setSchedule(null);
+      setSaveStaffStatus(null);
       return;
     }
     console.log('[ContextMenu] action:', itemId, 'targets:', targetIds);
@@ -68,6 +82,45 @@ export default function App() {
     else setRouteEnd(point);
     setRouteResult(null); // 位置が変わったら前回の計算結果・経路は無効
     setRoutePath(null);
+    setSchedule(null);
+    setSaveStaffStatus(null);
+  }
+
+  /** 簡易スタフ: 現在の経路(routePath)+選択中の車両+出発時刻から簡易スタフを計算する */
+  async function handleComputeSchedule() {
+    if (!routePath || !selectedTrain) return;
+    setIsComputingSchedule(true);
+    setScheduleError(null);
+    setSchedule(null);
+    setSaveStaffStatus(null);
+    try {
+      const result = await fetchSimpleSchedule(routePath, selectedTrain, departureTime);
+      setSchedule(result);
+    } catch (e) {
+      setScheduleError(e.message);
+    } finally {
+      setIsComputingSchedule(false);
+    }
+  }
+
+  /** 簡易スタフの保存(既存の時刻表保存APIにそのまま保存する) */
+  async function handleSaveStaff() {
+    if (!schedule || !saveStaffName) return;
+    setSaveStaffStatus('saving');
+    try {
+      await saveTimetable(saveStaffName, schedule);
+      setSaveStaffStatus('saved');
+    } catch (e) {
+      setSaveStaffStatus('error');
+    }
+  }
+
+  /** tick由来のclock({hour,minute,second,dayOffset})を "HH:MM:SS" (+n日)表示に整形する */
+  function formatScheduleClock(clock) {
+    if (!clock) return '--:--:--';
+    const pad = (n) => String(n).padStart(2, '0');
+    const base = `${pad(clock.hour)}:${pad(clock.minute)}:${pad(clock.second)}`;
+    return clock.dayOffset > 0 ? `${base} (+${clock.dayOffset}日)` : base;
   }
 
   /** 簡易運行: 現在の始点/終点からrailGraphで経路を求め、/api/route-profileへ渡す */
@@ -76,6 +129,9 @@ export default function App() {
     setIsComputingRoute(true);
     setRouteResult(null);
     setRoutePath(null);
+    setSchedule(null);
+    setScheduleError(null);
+    setSaveStaffStatus(null);
     try {
       const route = findRailRoute(segments, routeStart, routeEnd);
       if (!route) {
@@ -313,6 +369,23 @@ export default function App() {
     return () => { cancelled = true; clearTimeout(timer); };
   }, []);
 
+  // ── 車両データ(trainspecs)の取得。簡易スタフの車両選択に使う。1回だけでよい ──
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const specs = await fetchTrainSpecs();
+        if (cancelled) return;
+        setTrainSpecs(specs);
+        const firstName = Object.keys(specs)[0];
+        if (firstName) setSelectedTrain(firstName);
+      } catch (e) {
+        console.warn('車両データの取得に失敗しました', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   return (
       <div className="app">
         <header className="topbar">
@@ -352,7 +425,10 @@ export default function App() {
                 <button
                     className="mode-btn"
                     style={{ marginLeft: 4 }}
-                    onClick={() => { setRouteStart(null); setRouteEnd(null); setRouteResult(null); setRoutePath(null); }}
+                    onClick={() => {
+                      setRouteStart(null); setRouteEnd(null); setRouteResult(null); setRoutePath(null);
+                      setSchedule(null); setScheduleError(null); setSaveStaffStatus(null);
+                    }}
                 >
                   クリア
                 </button>
@@ -364,6 +440,83 @@ export default function App() {
                 )}
                 {routeResult?.error && (
                     <span style={{ marginLeft: 8, color: 'var(--red)' }}>✗ {routeResult.error}</span>
+                )}
+              </div>
+          )}
+          {routeResult?.ok && (
+              <div className="topbar__status" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                簡易スタフ:
+                <select
+                    value={selectedTrain}
+                    onChange={(e) => setSelectedTrain(e.target.value)}
+                    disabled={!trainSpecs}
+                >
+                  {!trainSpecs && <option>車両データ取得中...</option>}
+                  {trainSpecs && Object.keys(trainSpecs).map((name) => (
+                      <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
+                出発
+                <input
+                    type="time"
+                    step="1"
+                    value={
+                      `${String(departureTime.hour).padStart(2, '0')}:` +
+                      `${String(departureTime.minute).padStart(2, '0')}:` +
+                      `${String(departureTime.second).padStart(2, '0')}`
+                    }
+                    onChange={(e) => {
+                      const [h, m, s] = e.target.value.split(':').map(Number);
+                      setDepartureTime({ hour: h || 0, minute: m || 0, second: s || 0 });
+                    }}
+                />
+                <button
+                    className="mode-btn"
+                    disabled={!selectedTrain || isComputingSchedule}
+                    onClick={handleComputeSchedule}
+                >
+                  {isComputingSchedule ? '計算中...' : 'スタフを作成'}
+                </button>
+
+                {schedule && (() => {
+                  const start = schedule.schedule[0];
+                  const end = schedule.schedule[schedule.schedule.length - 1];
+                  return (
+                      <span style={{ color: 'var(--green)' }}>
+                        ✓ {formatScheduleClock(start.departureClock)}発 →{' '}
+                        {formatScheduleClock(end.arrivalClock)}着
+                        (所要{(end.legDurationTicks / 20).toFixed(1)}秒)
+                        {schedule.brakeSpecEstimated && (
+                            <span style={{ marginLeft: 4, color: 'var(--yellow, orange)' }}>
+                              ⚠ブレーキ性能は暫定値(加速度と同じ値)です
+                            </span>
+                        )}
+                      </span>
+                  );
+                })()}
+                {scheduleError && (
+                    <span style={{ color: 'var(--red)' }}>✗ {scheduleError}</span>
+                )}
+
+                {schedule && (
+                    <>
+                      <input
+                          type="text"
+                          placeholder="保存名"
+                          value={saveStaffName}
+                          onChange={(e) => setSaveStaffName(e.target.value)}
+                          style={{ width: 100 }}
+                      />
+                      <button
+                          className="mode-btn"
+                          disabled={!saveStaffName || saveStaffStatus === 'saving'}
+                          onClick={handleSaveStaff}
+                      >
+                        保存
+                      </button>
+                      {saveStaffStatus === 'saved' && <span style={{ color: 'var(--green)' }}>✓ 保存しました</span>}
+                      {saveStaffStatus === 'error' && <span style={{ color: 'var(--red)' }}>✗ 保存に失敗しました</span>}
+                    </>
                 )}
               </div>
           )}

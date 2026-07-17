@@ -81,3 +81,30 @@ export async function saveTimetable(name, data) {
   }
   return res.json();
 }
+
+/** 車両性能データ(trainspecs.json)を取得する。キーが車両のresourceName。 */
+export async function fetchTrainSpecs() {
+  const res = await fetch('/api/trainspecs');
+  if (!res.ok) {
+    throw new Error(`車両データの取得に失敗しました (HTTP ${res.status})`);
+  }
+  return res.json();
+}
+
+/**
+ * 経路(route)+車両(trainResourceName)+出発時刻(departure)から簡易スタフを計算する。
+ * route: mapEngine/railGraph.js#findRailRouteの戻り値をそのまま渡す。
+ * departure: { hour, minute, second }
+ */
+export async function fetchSimpleSchedule(route, trainResourceName, departure) {
+  const res = await fetch('/api/simple-schedule', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ route, trainResourceName, departure }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `簡易スタフの計算に失敗しました (HTTP ${res.status})`);
+  }
+  return res.json();
+}

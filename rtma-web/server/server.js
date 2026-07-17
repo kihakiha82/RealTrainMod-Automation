@@ -3,6 +3,9 @@ const path = require('path');
 const fs = require('fs');
 const { buildRouteProfile } = require('../client/calc/routeProfile');
 const { resolveOrderedSegments } = require('../client/calc/orderedRouteResolver');
+const { computeSpeedLimitProfile } = require('../client/calc/speedLimitProfile');
+const { computeAccelProfile, DEFAULT_G } = require('../client/calc/accelProfile');
+const { generateTimetable, tickToClock, clockToTick, TICKS_PER_SECOND } = require('../client/calc/timetableGenerator');
 
 const app = express();
 const PORT = process.env.PORT || 4500;
@@ -71,6 +74,123 @@ app.post('/api/route-profile', (req, res) => {
       // route中のidがrails.json側に見つからない等(rails.jsonが更新された場合に起こりうる)
       res.status(400).json({ error: resolveErr.message });
     }
+  });
+});
+
+// 簡易運行: 経路(始点→終点)+車両+出発時刻から「簡易スタフ」(発車・到着時刻と
+// 速度プロファイル)を計算する。中間駅は無し(始点・終点の2駅だけの時刻表)。
+// body: {
+//   route: { id, reversed, sStart?, sEnd? }[],   // /api/route-profileと同じ形式
+//   trainResourceName: string,                    // trainspecs.jsonのキー(例:"kiha600")
+//   departure: { hour, minute, second },          // 出発時刻(日付はまだ扱わない簡易版)
+// }
+app.post('/api/simple-schedule', (req, res) => {
+  const { route, trainResourceName, departure } = req.body;
+
+  if (!Array.isArray(route) || route.length === 0) {
+    res.status(400).json({ error: 'routeは1件以上の { id, reversed } の配列である必要があります' });
+    return;
+  }
+  if (typeof trainResourceName !== 'string' || !trainResourceName) {
+    res.status(400).json({ error: 'trainResourceNameが必要です' });
+    return;
+  }
+  const { hour, minute, second } = departure || {};
+  if (
+      typeof hour !== 'number' || hour < 0 || hour > 23 ||
+      typeof minute !== 'number' || minute < 0 || minute > 59 ||
+      typeof second !== 'number' || second < 0 || second > 59
+  ) {
+    res.status(400).json({ error: '不正な出発時刻です({ hour, minute, second }が必要)' });
+    return;
+  }
+
+  const railsPath = path.join(DATA_DIR, 'rails.json');
+  const specsPath = path.join(DATA_DIR, 'trainspecs.json');
+
+  let allSegments;
+  try {
+    allSegments = JSON.parse(fs.readFileSync(railsPath, 'utf-8'));
+  } catch {
+    res.status(404).json({ error: 'rails.jsonが見つかりません', path: railsPath });
+    return;
+  }
+
+  let trainSpecs;
+  try {
+    trainSpecs = JSON.parse(fs.readFileSync(specsPath, 'utf-8'));
+  } catch {
+    res.status(404).json({ error: 'trainspecs.jsonが見つかりません', path: specsPath });
+    return;
+  }
+
+  const trainSpec = trainSpecs[trainResourceName];
+  if (!trainSpec) {
+    res.status(400).json({ error: `車両specが見つかりません: ${trainResourceName}` });
+    return;
+  }
+
+  let profile;
+  try {
+    const orderedSegments = resolveOrderedSegments(route, allSegments);
+    profile = buildRouteProfile(orderedSegments);
+  } catch (resolveErr) {
+    res.status(400).json({ error: resolveErr.message });
+    return;
+  }
+
+  const { points } = profile;
+  if (points.length < 2) {
+    res.status(400).json({ error: '経路が短すぎます(点数が2未満)' });
+    return;
+  }
+  const lastIndex = points.length - 1;
+
+  const vmax = Math.max(...trainSpec.maxSpeedStages);
+  const aAccelBase = trainSpec.acceleration;
+  // ブレーキ性能はtrainspecs.jsonにまだ無いため、暫定的に加速度と同じ値を代用する。
+  // 較正済みの値が用意でき次第、trainSpec側にフィールドを追加して差し替える。
+  const aBrakeBase = trainSpec.acceleration;
+
+  const vLimit = computeSpeedLimitProfile(points, { vmax, stationIndices: [0, lastIndex] });
+  const { aAccelNet, aBrakeNet } = computeAccelProfile(points, {
+    aAccelBase,
+    aBrakeBase,
+    g: DEFAULT_G,
+  });
+
+  const startTick = clockToTick(hour, minute, second);
+  const stationIndices = [
+    { name: '始点', index: 0, s: points[0].s },
+    { name: '終点', index: lastIndex, s: points[lastIndex].s },
+  ];
+
+  let result;
+  try {
+    result = generateTimetable(points, vLimit, aAccelNet, aBrakeNet, stationIndices, { startTick });
+  } catch (genErr) {
+    res.status(400).json({ error: genErr.message });
+    return;
+  }
+
+  // 各駅の時刻に、時計表示(時:分:秒)と日をまたいだかどうか(dayOffset)を添えて返す
+  const secondsPerDay = 86400;
+  const withClock = (tick) => ({
+    ...tickToClock(tick),
+    dayOffset: Math.floor(tick / TICKS_PER_SECOND / secondsPerDay),
+  });
+  const schedule = result.schedule.map((entry) => ({
+    ...entry,
+    arrivalClock: entry.arrivalTick != null ? withClock(entry.arrivalTick) : null,
+    departureClock: entry.departureTick != null ? withClock(entry.departureTick) : null,
+  }));
+
+  res.json({
+    trainResourceName,
+    departure,
+    brakeSpecEstimated: true,
+    totalLength: profile.totalLength,
+    schedule,
   });
 });
 

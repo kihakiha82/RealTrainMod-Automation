@@ -15,6 +15,10 @@
  * 有用な情報になる。
  */
 
+// 1ブロック=1m、1tick=1/20秒なので、実重力加速度(9.81 m/s^2。speedLimitProfile.jsの
+// GRAVITYと同じ基準)をブロック/tick^2に換算した値。g[blocks/tick^2] = g[m/s^2] / 20^2。
+const DEFAULT_G = 9.81 / (20 * 20); // ≈ 0.024525
+
 /**
  * points: routeProfile由来の {thetaRad} を持つ配列
  * options: {
@@ -42,4 +46,5 @@ function computeAccelProfile(points, options) {
 
 module.exports = {
   computeAccelProfile,
+  DEFAULT_G,
 };
