@@ -19,9 +19,11 @@ import ContextMenu from './ContextMenu';
  *   ((itemId, targetIds, railPoint) => void)。railPointはクリック位置に一番近い、
  *   対象セグメント上の点({ segId, s, x, z })。何もしなくても動く(メニュー自体はこの
  *   コンポーネント内で開閉が完結する)ので省略可能。
+ * onRoutePointChange: 始点/終点マーカーをドラッグして位置が確定した時に呼ばれる
+ *   (('start'|'end', { segId, s, x, z }) => void)。
  */
 const Map2D = forwardRef(function Map2D(
-  { segments, player, selectedIds, routePath, routeStart, routeEnd, onSelectionChange, onContextMenuAction },
+  { segments, player, selectedIds, routePath, routeStart, routeEnd, onSelectionChange, onContextMenuAction, onRoutePointChange },
   ref
 ) {
   const containerRef = useRef(null);
@@ -32,6 +34,8 @@ const Map2D = forwardRef(function Map2D(
   onSelectionChangeRef.current = onSelectionChange;
   const onContextMenuActionRef = useRef(onContextMenuAction);
   onContextMenuActionRef.current = onContextMenuAction;
+  const onRoutePointChangeRef = useRef(onRoutePointChange);
+  onRoutePointChangeRef.current = onRoutePointChange;
 
   // 右クリックメニューの開閉状態。{ x, y, targetIds, railPoint } | null
   const [contextMenu, setContextMenu] = useState(null);
@@ -41,6 +45,7 @@ const Map2D = forwardRef(function Map2D(
     controllerRef.current = createMap2DController(containerRef.current, {
       onSelectionChange: (ids) => onSelectionChangeRef.current?.(ids),
       onContextMenu: (info) => setContextMenu(info),
+      onRoutePointChange: (role, point) => onRoutePointChangeRef.current?.(role, point),
     });
     return () => {
       controllerRef.current?.destroy();
