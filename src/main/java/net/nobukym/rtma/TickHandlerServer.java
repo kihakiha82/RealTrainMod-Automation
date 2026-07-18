@@ -24,6 +24,7 @@ import net.nobukym.rtma.train.TrainCollector;
 import net.nobukym.rtma.train.TrainState;
 import net.nobukym.rtma.train.TrainStateConverter;
 import net.nobukym.rtma.train.TrainProbe;
+import net.nobukym.rtma.train.AssignmentReader;
 
 import java.io.File;
 import java.io.IOException;
@@ -81,6 +82,9 @@ public class TickHandlerServer {
                 exportTrains(world);
                 PlayerPositionExporter.exportPlayerPosition(world);
                 RtmaTimeExporter.exportTime(world);
+                // Web側(UI)が書いたスタフ紐付けを読んでメモリに反映する。
+                // NotchControllerが実装されたら、この直後にノッチ制御を呼ぶ。
+                AssignmentReader.reload(world);
             }
 
             if (TRAIN_MODEL_PROBE_ENABLED && !trainModelProbeDone && tickCounter >= TRAIN_MODEL_PROBE_DELAY_TICKS) {

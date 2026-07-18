@@ -56,4 +56,13 @@ public final class PathProvider {
         }
         return dir;
     }
+
+    /**
+     * Web側(UI)が書き込み、Mod側(AssignmentReader)が読む紐付けファイル。
+     * Web→Mod方向の唯一のデータ経路として使う(trains.jsonはMod→Web専用の逆方向)。
+     * フォーマット: { "<uuid>": { "timetableName": string, "assignedAt": {...} }, ... }
+     */
+    public static File getAssignmentFile(World world) {
+        return new File(getWorldRtmaDir(world), "train-assignments.json");
+    }
 }

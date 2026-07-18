@@ -108,3 +108,36 @@ export async function fetchSimpleSchedule(route, trainResourceName, departure) {
   }
   return res.json();
 }
+
+/** 列車↔スタフの紐付け一覧を取得する。trains.jsonの現在状態もマージされている。 */
+export async function fetchTrainAssignments() {
+  const res = await fetch('/api/train-assignments');
+  if (!res.ok) throw new Error(`紐付け一覧の取得に失敗しました (HTTP ${res.status})`);
+  return res.json();
+}
+
+/** 指定列車にスタフを紐付ける */
+export async function assignTrain(uuid, timetableName, assignedAt) {
+  const res = await fetch(`/api/train-assignments/${encodeURIComponent(uuid)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ timetableName, assignedAt }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `列車への適用に失敗しました (HTTP ${res.status})`);
+  }
+  return res.json();
+}
+
+/** 指定列車の紐付けを解除する */
+export async function unassignTrain(uuid) {
+  const res = await fetch(`/api/train-assignments/${encodeURIComponent(uuid)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `紐付け解除に失敗しました (HTTP ${res.status})`);
+  }
+  return res.json();
+}

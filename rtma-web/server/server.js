@@ -315,6 +315,82 @@ function timetableFilePath(name) {
   return path.join(DATA_DIR, 'timetables', `${safeName}.json`);
 }
 
+// ── train-assignments(列車↔スタフの紐付け) ──────────────────────────────────
+//
+// train-assignments.json は Web側が書き、Mod側(AssignmentReader)が読む唯一のファイル。
+// trains.json はMod→Web専用(読み取り専用)なので、逆方向の通信はこのファイルで行う。
+// フォーマット: { "<uuid>": { "timetableName": string, "assignedAt": {h,m,s} } }
+
+function assignmentFilePath() {
+  return path.join(DATA_DIR, 'train-assignments.json');
+}
+
+function readAssignments() {
+  try {
+    return JSON.parse(fs.readFileSync(assignmentFilePath(), 'utf-8'));
+  } catch {
+    return {};
+  }
+}
+
+function writeAssignments(assignments) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(assignmentFilePath(), JSON.stringify(assignments, null, 2), 'utf-8');
+}
+
+// 全紐付けを返す。trains.jsonの現在状態とマージして列車の現在位置・速度も添える
+app.get('/api/train-assignments', (req, res) => {
+  const assignments = readAssignments();
+
+  // trains.jsonで現在ワールドにいる列車情報を付加する(いなければ空でよい)
+  let trainsByUuid = {};
+  try {
+    const trains = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'trains.json'), 'utf-8'));
+    for (const t of trains) trainsByUuid[t.uuid] = t;
+  } catch { /* trains.jsonが無い(Minecraft未起動)場合は無視 */ }
+
+  const result = {};
+  for (const [uuid, entry] of Object.entries(assignments)) {
+    result[uuid] = { ...entry, train: trainsByUuid[uuid] ?? null };
+  }
+  res.json(result);
+});
+
+// 指定列車にスタフを紐付ける
+// body: { timetableName: string, assignedAt: { hour, minute, second } }
+app.post('/api/train-assignments/:uuid', (req, res) => {
+  const { uuid } = req.params;
+  const { timetableName, assignedAt } = req.body;
+
+  if (typeof timetableName !== 'string' || !timetableName) {
+    res.status(400).json({ error: 'timetableNameが必要です' });
+    return;
+  }
+  // 指定のスタフが実際に存在するか確認する
+  if (!fs.existsSync(timetableFilePath(timetableName))) {
+    res.status(404).json({ error: `スタフが見つかりません: ${timetableName}` });
+    return;
+  }
+
+  const assignments = readAssignments();
+  assignments[uuid] = { timetableName, assignedAt: assignedAt ?? null };
+  writeAssignments(assignments);
+  res.json({ ok: true, uuid, timetableName });
+});
+
+// 指定列車の紐付けを解除する
+app.delete('/api/train-assignments/:uuid', (req, res) => {
+  const { uuid } = req.params;
+  const assignments = readAssignments();
+  if (!assignments[uuid]) {
+    res.status(404).json({ error: `uuid ${uuid} の紐付けが見つかりません` });
+    return;
+  }
+  delete assignments[uuid];
+  writeAssignments(assignments);
+  res.json({ ok: true, uuid });
+});
+
 app.listen(PORT, () => {
   console.log(`RTMA Web: http://localhost:${PORT}`);
   console.log(`データディレクトリ: ${DATA_DIR}`);

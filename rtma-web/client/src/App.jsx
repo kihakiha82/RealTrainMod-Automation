@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Map2D from './components/Map2D';
 import TimeEditor from './components/TimeEditor';
-import { fetchRails, fetchPlayerPosition, fetchTime, saveTime, fetchRouteProfile, fetchTrainSpecs, fetchSimpleSchedule, saveTimetable } from './api';
+import { fetchRails, fetchPlayerPosition, fetchTime, saveTime, fetchRouteProfile, fetchTrainSpecs, fetchSimpleSchedule, saveTimetable, fetchTrainAssignments, assignTrain, unassignTrain } from './api';
 import { extrapolateTime, extrapolateFullDateTime, formatDateTime } from './timeUtils';
 import { findRailRoute } from './mapEngine/railGraph';
 
@@ -36,6 +36,11 @@ export default function App() {
   const [scheduleError,  setScheduleError]  = useState(null);
   const [saveStaffName,  setSaveStaffName]  = useState('');
   const [saveStaffStatus,setSaveStaffStatus]= useState(null); // 'saving' | 'saved' | 'error' | null
+
+  // 列車への適用
+  const [trains,         setTrains]         = useState([]); // /api/trains の現在値
+  const [assignments,    setAssignments]     = useState({}); // /api/train-assignments の現在値
+  const [assignStatus,   setAssignStatus]    = useState({}); // { [uuid]: 'assigning'|'assigned'|'error' }
 
   const mapRef          = useRef(null);
   const hasCenteredRef  = useRef(false);
@@ -84,6 +89,32 @@ export default function App() {
     setRoutePath(null);
     setSchedule(null);
     setSaveStaffStatus(null);
+  }
+
+  /** 指定列車にスタフを紐付ける */
+  async function handleAssignTrain(uuid) {
+    if (!saveStaffName) return;
+    setAssignStatus(prev => ({ ...prev, [uuid]: 'assigning' }));
+    try {
+      await assignTrain(uuid, saveStaffName, departureTime);
+      const data = await fetchTrainAssignments();
+      setAssignments(data);
+      setAssignStatus(prev => ({ ...prev, [uuid]: 'assigned' }));
+    } catch (e) {
+      setAssignStatus(prev => ({ ...prev, [uuid]: 'error' }));
+    }
+  }
+
+  /** 指定列車のスタフ紐付けを解除する */
+  async function handleUnassignTrain(uuid) {
+    try {
+      await unassignTrain(uuid);
+      const data = await fetchTrainAssignments();
+      setAssignments(data);
+      setAssignStatus(prev => { const next = { ...prev }; delete next[uuid]; return next; });
+    } catch (e) {
+      console.warn('紐付け解除に失敗しました', e);
+    }
   }
 
   /** 簡易スタフ: 現在の経路(routePath)+選択中の車両+出発時刻から簡易スタフを計算する */
@@ -140,7 +171,7 @@ export default function App() {
       }
       // 計算された経路をstateに保存（ハイライト・矢印表示用）
       setRoutePath(route);
-      
+
       const profile = await fetchRouteProfile(route);
       setRouteResult({
         ok: true,
@@ -369,6 +400,36 @@ export default function App() {
     return () => { cancelled = true; clearTimeout(timer); };
   }, []);
 
+  // ── trainsポーリング(5秒ごと。Minecraft未起動時はスキップ) ─────────────────
+  useEffect(() => {
+    let timer;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/trains');
+        if (res.ok) setTrains(await res.json());
+      } catch { /* 未起動時は無視 */ }
+      finally { if (!cancelled) timer = setTimeout(poll, 5000); }
+    };
+    poll();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, []);
+
+  // ── train-assignmentsポーリング(スタフが保存・解除されたら即反映 + 5秒ごと) ──
+  useEffect(() => {
+    let timer;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const data = await fetchTrainAssignments();
+        if (!cancelled) setAssignments(data);
+      } catch { /* 無視 */ }
+      finally { if (!cancelled) timer = setTimeout(poll, 5000); }
+    };
+    poll();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, []);
+
   // ── 車両データ(trainspecs)の取得。簡易スタフの車両選択に使う。1回だけでよい ──
   useEffect(() => {
     let cancelled = false;
@@ -461,9 +522,9 @@ export default function App() {
                     type="time"
                     step="1"
                     value={
-                      `${String(departureTime.hour).padStart(2, '0')}:` +
-                      `${String(departureTime.minute).padStart(2, '0')}:` +
-                      `${String(departureTime.second).padStart(2, '0')}`
+                        `${String(departureTime.hour).padStart(2, '0')}:` +
+                        `${String(departureTime.minute).padStart(2, '0')}:` +
+                        `${String(departureTime.second).padStart(2, '0')}`
                     }
                     onChange={(e) => {
                       const [h, m, s] = e.target.value.split(':').map(Number);
@@ -520,6 +581,45 @@ export default function App() {
                 )}
               </div>
           )}
+          {/* 列車への適用パネル: スタフが保存済みで列車が1両以上ワールドにいる場合に表示 */}
+          {saveStaffStatus === 'saved' && saveStaffName && trains.length > 0 && (() => {
+            const candidates = trains.filter(
+                t => t.resourceName === selectedTrain && t.isControlCar
+            );
+            if (candidates.length === 0) return null;
+            return (
+                <div className="topbar__status" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  列車に適用:
+                  {candidates.map(t => {
+                    const assigned = assignments[t.uuid];
+                    const status = assignStatus[t.uuid];
+                    const label = t.customName || `${t.resourceName} (formationId:${t.formationId})`;
+                    return (
+                        <span key={t.uuid} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <span style={{ fontSize: '0.9em' }}>{label}</span>
+                          {assigned?.timetableName === saveStaffName ? (
+                              <>
+                                <span style={{ color: 'var(--green)' }}>✓ 適用中</span>
+                                <button className="mode-btn" onClick={() => handleUnassignTrain(t.uuid)}>
+                                  解除
+                                </button>
+                              </>
+                          ) : (
+                              <button
+                                  className="mode-btn"
+                                  disabled={status === 'assigning'}
+                                  onClick={() => handleAssignTrain(t.uuid)}
+                              >
+                                {status === 'assigning' ? '適用中...' : '適用'}
+                              </button>
+                          )}
+                          {status === 'error' && <span style={{ color: 'var(--red)' }}>✗</span>}
+                        </span>
+                    );
+                  })}
+                </div>
+            );
+          })()}
           <div className="topbar__modes">
             <button className="mode-btn is-active">2D</button>
             <button className="mode-btn" disabled title="準備中">3D</button>
