@@ -74,6 +74,10 @@ function generateTimetable(points, vLimit, aAccelNet, aBrakeNet, stationIndices,
         s: leg.s,
         v: leg.v,
         t: leg.t.map((tt) => tt + currentTick),
+        // Mod側(PositionProjector)が列車の現在位置(x,z)から経路上のsを
+        // 逆算するために必要。leg.s[i]に対応する実座標(routeProfileのpoints由来)。
+        x: leg.s.map((_, i) => points[prevStation.index + i].x),
+        z: leg.s.map((_, i) => points[prevStation.index + i].z),
       },
     });
 

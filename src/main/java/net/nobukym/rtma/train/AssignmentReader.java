@@ -1,11 +1,16 @@
 package net.nobukym.rtma.train;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonSyntaxException;
+import com.google.gson.reflect.TypeToken;
 import net.minecraft.world.World;
 import net.nobukym.rtma.Rtma;
 import net.nobukym.rtma.data.PathProvider;
 
-import java.io.File;
 import java.io.IOException;
+import java.io.File;
+import java.lang.reflect.Type;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.Collections;
 import java.util.HashMap;
@@ -17,93 +22,95 @@ import java.util.UUID;
  * 「どの列車に(UUID)、どのスタフが(timetableName)割り当てられているか」を
  * メモリ上のMapとして保持する。
  *
- * TickHandlerServer の exportInterval と同じ間隔(EXPORT_INTERVAL_TICKS)で
- * reload() を呼ぶことで、Web側でスタフを適用・解除した結果を Mod 側に反映する。
+ * TickHandlerServer の onServerTick から毎tick reload() を呼ぶことで、
+ * Web側でスタフを適用・解除した結果を Mod 側に反映する
+ * (ファイル自体はEXPORT_INTERVAL_TICKSごとの書き出しと違い、いつ変更されるか
+ * 分からないため、ファイルの最終更新時刻を見て変化した時だけ読み直す)。
  *
- * ─────────────────────────────────────────────────
- *  【NotchController実装セッションに向けたTODO】
- *
- *  このクラスが保持する assignments を参照して、実際にノッチを制御するのが
- *  NotchController(未実装)の役割になる。以下の設計方針で実装する:
- *
- *  1. NotchController は TickHandlerServer の onServerTick から毎 tick 呼び出す
- *     (スタフ計算の結果(legProfile の s/v/t 列)と現在の列車位置を比較して
- *     目標速度を求め、notch を EntityTrainBase.setNotch() で直接セットする)
- *
- *  2. 現在位置の s(経路上の累積距離) への変換は、
- *     rails.json のサンプル点列との最近傍探索 + 補間で行う予定。
- *     TrainState.entryPos(レール進行カウンタ)との対応を要検証。
- *
- *  3. 「出発時刻」の管理:
- *     assignedAt(時:分:秒)と RtmaCalendarData の現在時刻を tickToClock/clockToTick
- *     (timetableGenerator.js と同等の換算ロジックを Java 側で実装)で比較し、
- *     出発時刻になったら力行を開始する。
- *     → Java 側の換算: totalSeconds = h*3600 + m*60 + s; tick = totalSeconds * 20;
- *
- *  4. timetables/<name>.json のロードは TimetableLoader(未実装、新規作成)が担う。
- *     legProfile の s/v/t 配列をパースして double[] として保持する想定。
- * ─────────────────────────────────────────────────
+ * 実際にノッチを制御するのは AutopilotManager / NotchController の役割。
+ * このクラスは「割り当て情報を読む」ことだけに専念する。
  */
 public final class AssignmentReader {
 
     private AssignmentReader() {}
 
+    private static final Gson GSON = new Gson();
+
+    /** train-assignments.json 1エントリ分のJSON構造(Gsonのデシリアライズ先) */
+    private static final class AssignmentEntry {
+        String timetableName;
+        // assignedAt(紐付け操作を行った時刻。参考情報でノッチ制御には使わない)は
+        // 現時点では読み捨てる。実際の出発判定は TimetableData.departure を使う。
+    }
+
     /**
      * UUID → timetableName のマッピング。
-     * TickHandlerServer から reload() 後にこの Map を参照してノッチ制御に使う。
-     * スレッドセーフにするため、更新はこのフィールドごと新しい Map で置き換える(swap)。
+     * 更新はこのフィールドごと新しいMapで置き換える(swap)ことでスレッドセーフにする。
      */
     private static volatile Map<UUID, String> assignments = Collections.emptyMap();
 
+    /** 前回読み込み時点でのファイル最終更新時刻。変化が無ければ読み直しをスキップする */
+    private static long lastModified = -1;
+
     /**
      * train-assignments.json を読み直してメモリ上の assignments を更新する。
-     * TickHandlerServer.onServerTick から EXPORT_INTERVAL_TICKS ごとに呼ぶ。
-     *
-     * ファイルが存在しない場合は空 Map をセットして正常終了する(初回起動前や
-     * Minecraft を起動した直後で Web 側がまだ書いていない場合に起こりうる)。
-     *
-     * JSON パースは標準ライブラリの範囲で素朴に行う
-     * (RTM 環境では Gson が使用可能なはずなので、TODO: 実装セッションで Gson に置き換える)。
+     * ファイルが存在しない場合は空Mapをセットして正常終了する
+     * (Minecraft起動直後でWeb側がまだ何も書いていない場合などに起こりうる)。
      */
     public static void reload(World world) {
         File file = PathProvider.getAssignmentFile(world);
         if (!file.exists()) {
-            assignments = Collections.emptyMap();
+            if (!assignments.isEmpty()) assignments = Collections.emptyMap();
+            lastModified = -1;
             return;
         }
 
+        long modified = file.lastModified();
+        if (modified == lastModified) {
+            return; // 前回読み込み時から変化が無いのでスキップ
+        }
+
         try {
-            String json = new String(Files.readAllBytes(file.toPath()), java.nio.charset.StandardCharsets.UTF_8);
+            String json = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+            Type type = new TypeToken<Map<String, AssignmentEntry>>() {}.getType();
+            Map<String, AssignmentEntry> raw = GSON.fromJson(json, type);
 
-            // TODO: Gson で正式にパースする。現時点はスケルトンのため空 Map を返す。
-            //   実装例:
-            //   Type type = new TypeToken<Map<String, AssignmentEntry>>(){}.getType();
-            //   Map<String, AssignmentEntry> raw = new Gson().fromJson(json, type);
-            //   Map<UUID, String> result = new HashMap<>();
-            //   for (Map.Entry<String, AssignmentEntry> e : raw.entrySet()) {
-            //       result.put(UUID.fromString(e.getKey()), e.getValue().timetableName);
-            //   }
-            //   assignments = Collections.unmodifiableMap(result);
+            if (raw == null) {
+                assignments = Collections.emptyMap();
+                lastModified = modified;
+                return;
+            }
 
-            Rtma.LOGGER.debug("AssignmentReader: train-assignments.json を読み込みました ({} bytes)", json.length());
-            // スケルトン: パース未実装のため、現時点は読んだことだけ記録して何もしない
-            assignments = Collections.emptyMap();
+            Map<UUID, String> result = new HashMap<>();
+            for (Map.Entry<String, AssignmentEntry> e : raw.entrySet()) {
+                if (e.getValue() == null || e.getValue().timetableName == null) continue;
+                try {
+                    result.put(UUID.fromString(e.getKey()), e.getValue().timetableName);
+                } catch (IllegalArgumentException badUuid) {
+                    Rtma.LOGGER.warn("AssignmentReader: 不正なUUIDをスキップしました: {}", e.getKey());
+                }
+            }
+
+            assignments = Collections.unmodifiableMap(result);
+            lastModified = modified;
+            Rtma.LOGGER.info("AssignmentReader: train-assignments.jsonを読み込みました ({}件)", result.size());
 
         } catch (IOException e) {
-            Rtma.LOGGER.warn("AssignmentReader: train-assignments.json の読み込みに失敗しました: {}", e.getMessage());
+            Rtma.LOGGER.warn("AssignmentReader: train-assignments.jsonの読み込みに失敗しました: {}", e.getMessage());
+        } catch (JsonSyntaxException e) {
+            Rtma.LOGGER.warn("AssignmentReader: train-assignments.jsonの構文が不正です: {}", e.getMessage());
         }
     }
 
     /**
      * 指定 UUID に割り当てられた timetableName を返す。
      * 割り当てが無い場合は null を返す。
-     * NotchController(未実装)から呼び出す想定。
      */
     public static String getTimetableName(UUID uuid) {
         return assignments.get(uuid);
     }
 
-    /** 現在メモリ上の割り当て全体を返す(読み取り専用)。デバッグ・ログ用。 */
+    /** 現在メモリ上の割り当て全体を返す(読み取り専用)。AutopilotManagerから呼ぶ。 */
     public static Map<UUID, String> getAll() {
         return assignments;
     }
