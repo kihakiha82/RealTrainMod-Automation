@@ -139,7 +139,6 @@ function buildRouteProfile(orderedSegments) {
       });
     }
   }
-  console.log("1")
   return { points, totalLength: points.length > 0 ? points[points.length - 1].s : 0 };
 }
 
