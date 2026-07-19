@@ -26,17 +26,21 @@ import java.util.UUID;
  *   同じ出発時刻を迎えると再出発してしまう可能性がある(1日1本の運用を
  *   意図しているなら、到着後にAssignmentReader側の紐付けを解除するか、
  *   本クラス側に「本日は運行済み」フラグを持たせる必要がある。要検討)。
- * - maxPowerNotch(力行側の最大ノッチ段数)をtrainspecs.jsonから取得する
- *   経路が無いため、暫定的に固定値を使っている。
+ * - maxPowerNotch(力行側の最大ノッチ段数)・力行加速度は、TrainSpecFileCache経由で
+ *   trainspecs.json(実測値)から取得する。ただしノッチ段別の加速度実測値は無いため、
+ *   全ノッチ投入時の最大加速度を段数で線形按分した推定値を使っている
+ *   (buildPowerRates参照。ブレーキ側はNotchController.BRAKE_RATESに実測値あり)。
  * ─────────────────────────────────────────────────
  */
 public final class AutopilotManager {
 
     private AutopilotManager() {}
 
-    // trainspecs.jsonのJava側読み込み経路が無いため暫定固定(要検証・要差し替え)。
-    // kiha600のmaxSpeedStagesが3段なのでこれに合わせている。
-    private static final int DEFAULT_MAX_POWER_NOTCH = 3;
+    // trainspecs.jsonにresourceNameが見つからない場合の力行加速度フォールバック値
+    // (ブロック/tick^2)。通常は実測値(TrainSpecFileCache経由)を使うので、
+    // この値が使われるのは車種データが未読み込みの異常系のみを想定している。
+    private static final float FALLBACK_ACCELERATION = 0.0015f;
+    private static final int FALLBACK_MAX_POWER_NOTCH = 3;
 
     /** TickHandlerServer.onServerTickから毎tick呼び出す */
     public static void tick(World world) {
@@ -56,7 +60,7 @@ public final class AutopilotManager {
             TimetableLoader.TimetableData timetable = TimetableLoader.load(world, timetableName);
             if (timetable == null || timetable.schedule == null || timetable.schedule.isEmpty()) continue;
 
-            applyAutopilot(train, timetable, nowTickOfDay);
+            applyAutopilot(world, train, timetable, nowTickOfDay);
         }
     }
 
@@ -76,7 +80,7 @@ public final class AutopilotManager {
         return null;
     }
 
-    private static void applyAutopilot(EntityTrainBase train, TimetableLoader.TimetableData timetable, long nowTickOfDay) {
+    private static void applyAutopilot(World world, EntityTrainBase train, TimetableLoader.TimetableData timetable, long nowTickOfDay) {
         // notchは編成のisControlCar=true車両にしか効かない(TrainState.javaの検証済み知見)。
         // Web側のUIは/api/trainsのisControlCarで絞った候補しか適用させないが、
         // 念のためここでも保険をかけておく。
@@ -98,12 +102,37 @@ public final class AutopilotManager {
         if (leg == null) return;
 
         double currentS = leg.legProfile.projectS(train.posX, train.posZ);
-        double targetSpeed = leg.legProfile.speedAt(currentS);
         double currentSpeed = train.getSpeed();
 
+        double[] powerRates = buildPowerRates(world, timetable.trainResourceName);
+
         int notch = NotchController.computeNotch(
-                targetSpeed, currentSpeed, train.getNotch(), DEFAULT_MAX_POWER_NOTCH
+                currentS, currentSpeed,
+                leg.legProfile.s, leg.legProfile.v,
+                powerRates, train.getNotch()
         );
         train.setNotch(notch);
+    }
+
+    /**
+     * 力行ノッチ1〜maxPowerNotchそれぞれの加速度テーブルを組み立てる。
+     * ブレーキ(NotchController.BRAKE_RATES)と違い、ノッチ別の実測加速度データが
+     * trainspecs.jsonにまだ無いため、実測されている「最大加速度(全ノッチ投入時)」を
+     * 段数で線形按分した推定値を使う(暫定。将来ノッチ別の実測値が手に入り次第、
+     * TrainSpecFileCache.SpecEntryにフィールドを追加してこの推定をやめる)。
+     */
+    private static double[] buildPowerRates(World world, String resourceName) {
+        TrainSpecFileCache.SpecEntry spec = TrainSpecFileCache.get(world, resourceName);
+
+        float acceleration = spec != null ? spec.acceleration : FALLBACK_ACCELERATION;
+        int maxPowerNotch = (spec != null && spec.maxSpeedStages != null && spec.maxSpeedStages.length > 0)
+                ? spec.maxSpeedStages.length
+                : FALLBACK_MAX_POWER_NOTCH;
+
+        double[] rates = new double[maxPowerNotch];
+        for (int i = 0; i < maxPowerNotch; i++) {
+            rates[i] = acceleration * (i + 1) / (double) maxPowerNotch;
+        }
+        return rates;
     }
 }
