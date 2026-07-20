@@ -45,6 +45,20 @@ public class RailMapConverter {
     private static final double STRAIGHT_THRESHOLD_DEG = 0.5;
 
     public static RailSegment convert(RailMap rail, World world, Map<RailMap, List<Point>> railToPoints) {
+        return convert(rail, world, railToPoints, true);
+    }
+
+    /**
+     * @param confirmActiveRoute trueならPoint.getActiveRailMap(world)(レッドストーン判定)を
+     *                           使ってisActiveRouteを確定させる(通常のライブポーリング用)。
+     *                           falseの場合はisPoint/isMainRoute/pointMovementsだけ設定し、
+     *                           isActiveRouteは未確定(null)のまま残す
+     *                           (RailWorldScannerによる、チャンク未ロード領域のディスク直接スキャン用。
+     *                           getActiveRailMapはライブのWorldへの問い合わせが必要なため、
+     *                           この経路では信頼できる値を作れない)。
+     */
+    public static RailSegment convert(RailMap rail, World world, Map<RailMap, List<Point>> railToPoints,
+                                      boolean confirmActiveRoute) {
         RailSegment seg = new RailSegment();
 
         seg.startX = rail.getStartRP().posX;
@@ -94,14 +108,14 @@ public class RailMapConverter {
             seg.samples.add(sp);
         }
 
-        applyPointInfo(seg, rail, world, railToPoints);
+        applyPointInfo(seg, rail, world, railToPoints, confirmActiveRoute);
 
         return seg;
     }
 
     /** railが分岐(Point)のいずれかのルートに該当する場合、RailSegmentにポイント情報を反映する */
     private static void applyPointInfo(RailSegment seg, RailMap rail, World world,
-                                       Map<RailMap, List<Point>> railToPoints) {
+                                       Map<RailMap, List<Point>> railToPoints, boolean confirmActiveRoute) {
         List<Point> relatedPoints = railToPoints.get(rail);
         if (relatedPoints == null || relatedPoints.isEmpty()) {
             return;
@@ -114,10 +128,21 @@ public class RailMapConverter {
         seg.isMainRoute = isMainRoute;
 
         List<Float> movements = new ArrayList<>();
-        boolean allActive = true;
-
         for (Point point : relatedPoints) {
             movements.add(point.getMovement());
+        }
+        seg.pointMovements = movements;
+
+        if (!confirmActiveRoute) {
+            // オフラインスキャン(RailWorldScanner)由来。isActiveRouteの判定は
+            // Point.getActiveRailMap(world)経由のレッドストーン信号確認が必要で、
+            // ライブのWorldに依存するためここでは行わない。未確定のまま(null)にしておき、
+            // 実際にチャンクがロードされて通常のポーリングで確認され次第LIVEに更新される。
+            return;
+        }
+
+        boolean allActive = true;
+        for (Point point : relatedPoints) {
             // 関連する全Pointが「この区間が現在開通している」と言っていなければfalse(AND条件)
             if (point.getActiveRailMap(world) != rail) {
                 allActive = false;
@@ -133,8 +158,8 @@ public class RailMapConverter {
             }
         }
 
-        seg.pointMovements = movements;
         seg.isActiveRoute = allActive;
+        seg.activeRouteSource = RailSegment.ActiveRouteSource.LIVE;
     }
 
     /**

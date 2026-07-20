@@ -10,6 +10,7 @@ import net.nobukym.rtma.Rtma;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,10 +25,17 @@ import java.util.Map;
 public class PointCollector {
 
     public static List<Point> getAllPoints(World world) {
-        List<TileEntity> targetList = new ArrayList<>(world.loadedTileEntityList);
+        return extractPoints(world.loadedTileEntityList);
+    }
+
+    /**
+     * TileEntityの集合からPointを抽出する。RailCollector.extractRailMapsと同じ理由で
+     * リスト取得部分と分離してある(RailWorldScannerのオフラインスキャンでも使う)。
+     */
+    public static List<Point> extractPoints(Collection<TileEntity> tileEntities) {
         List<Point> gatheredPoints = new ArrayList<>();
 
-        for (TileEntity tileEntity : targetList) {
+        for (TileEntity tileEntity : tileEntities) {
             if (tileEntity instanceof TileEntityLargeRailSwitchCore) {
                 TileEntityLargeRailSwitchCore switchCore = (TileEntityLargeRailSwitchCore) tileEntity;
                 SwitchType switchType = switchCore.getSwitch();

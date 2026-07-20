@@ -15,6 +15,7 @@ import net.nobukym.rtma.rail.RailCollector;
 import net.nobukym.rtma.rail.RailDataExporter;
 import net.nobukym.rtma.rail.RailMapConverter;
 import net.nobukym.rtma.rail.RailSegment;
+import net.nobukym.rtma.rail.RailStore;
 import net.nobukym.rtma.time.RtmaCalendarData;
 import net.nobukym.rtma.time.RtmaDateTime;
 import net.nobukym.rtma.time.RtmaTime;
@@ -140,12 +141,19 @@ public class TickHandlerServer {
             //PointCollector.debugDump(world, allRailMaps, allPoints);
         }
 
-        List<RailSegment> segments = new ArrayList<>();
+        List<RailSegment> liveSegments = new ArrayList<>();
         for (RailMap rail : allRailMaps) {
-            segments.add(RailMapConverter.convert(rail, world, railToPoints));
+            liveSegments.add(RailMapConverter.convert(rail, world, railToPoints));
         }
 
-        String json = RailDataExporter.toJson(segments);
+        File outputFile = PathProvider.getRailsFile(world);
+
+        // liveSegments(今回チャンクロード中に見えた分)を、圏外で凍結中の既存データと
+        // マージする。これにより、未ロードチャンク内のレールがrails.jsonから
+        // 消えてしまう問題を解消する(詳細はRailStoreのクラスコメント参照)。
+        List<RailSegment> mergedSegments = RailStore.merge(liveSegments, world, world.getTotalWorldTime(), outputFile);
+
+        String json = RailDataExporter.toJson(mergedSegments);
         long hash = RailDataExporter.computeHash(json);
 
 
@@ -154,12 +162,20 @@ public class TickHandlerServer {
             return;
         }
 
-        File outputFile = PathProvider.getRailsFile(world);
         try {
             RailDataExporter.writeToFile(json, outputFile);
             lastHash = hash;
-            Rtma.LOGGER.info("rails.jsonを書き出しました ({}件、ポイント{}件): {}",
-                    segments.size(), allPoints.size(), outputFile.getAbsolutePath());
+
+            int liveCount = 0;
+            for (RailSegment seg : mergedSegments) {
+                if (seg.liveData) {
+                    liveCount++;
+                }
+            }
+
+            Rtma.LOGGER.info("rails.jsonを書き出しました (全{}件、うちlive{}件/凍結{}件、ポイント{}件): {}",
+                    mergedSegments.size(), liveCount, mergedSegments.size() - liveCount,
+                    allPoints.size(), outputFile.getAbsolutePath());
         } catch (IOException e) {
             Rtma.LOGGER.error("rails.jsonの書き出しに失敗しました", e);
         }

@@ -10,8 +10,10 @@ import net.minecraftforge.fml.common.FMLCommonHandler;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.common.event.FMLPreInitializationEvent;
 import net.minecraftforge.fml.common.event.FMLServerStartedEvent;
+import net.minecraftforge.fml.common.event.FMLServerStartingEvent;
 import net.minecraftforge.fml.common.event.FMLServerStoppingEvent;
 import net.minecraftforge.fml.common.network.NetworkRegistry;
+import net.nobukym.rtma.command.CommandRescanRails;
 import net.nobukym.rtma.data.PathProvider;
 import net.nobukym.rtma.data.PlayerPositionExporter;
 import net.nobukym.rtma.time.RtmaCalendarData;
@@ -51,6 +53,11 @@ public class Rtma {
     }
 
     static boolean isServerRunning = false;
+
+    @Mod.EventHandler
+    public void onServerStarting(FMLServerStartingEvent event) {
+        event.registerServerCommand(new CommandRescanRails());
+    }
 
 
 

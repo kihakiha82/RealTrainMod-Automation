@@ -44,6 +44,28 @@ public class RailSegment {
     /** 始点から終点までをサンプリングした点列(曲線の形状を表現するため) */
     public List<SamplePoint> samples;
 
+    /**
+     * 直近のポーリングで実際にチャンクがロードされていて、ライブデータを確認できたか。
+     * falseの場合、この先の各フィールド(特にisActiveRoute)は「最後にliveだった時点の値」で
+     * 凍結されている(RailStoreによるマージ)。
+     */
+    public boolean liveData = true;
+
+    /** 最後にliveで確認できたワールドtick(RailStoreが刻む。凍結中は更新されない) */
+    public long lastUpdatedTick = 0;
+
+    /** isActiveRouteの値が何に基づくか。ポイントでない場合はnull */
+    public ActiveRouteSource activeRouteSource = null;
+
+    public enum ActiveRouteSource {
+        /** チャンクロード中にPoint.getActiveRailMap(world)(レッドストーン判定)で直接確認した値 */
+        LIVE,
+        /** チャンクが未ロードのため、最後にLIVEだった時点の値をそのまま維持している */
+        FROZEN,
+        /** Web側で手動指定された値(将来実装、現時点では未使用) */
+        WEB_OVERRIDE
+    }
+
     public static class SamplePoint {
         public double x, y, z;
         public float yaw;

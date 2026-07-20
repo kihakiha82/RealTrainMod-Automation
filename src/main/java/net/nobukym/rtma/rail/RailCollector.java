@@ -13,6 +13,7 @@ import net.minecraftforge.fml.common.FMLCommonHandler;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
 
 
@@ -29,11 +30,19 @@ public class RailCollector {
 
     public static List<RailMap> getAllRailTileEntity(World world)
     {
-        List<TileEntity> targetList = new ArrayList<>(world.loadedTileEntityList);//すべてのtileEntityを取得
+        return extractRailMaps(world.loadedTileEntityList);
+    }
 
+    /**
+     * TileEntityの集合からRailMapを抽出する。
+     * ロード中チャンクの世界共通リスト(world.loadedTileEntityList)からでも、
+     * RailWorldScannerがディスクから直接読み込んだ未ロードチャンク分のTileEntityからでも
+     * 同じロジックで使えるよう、リスト取得部分と分離してある。
+     */
+    public static List<RailMap> extractRailMaps(Collection<TileEntity> tileEntities) {
         List<RailMap> gatheredRailMaps = new ArrayList<>();
 
-        for (TileEntity tileEntity : targetList){
+        for (TileEntity tileEntity : tileEntities){
             if (tileEntity instanceof TileEntityLargeRailCore) {
                 TileEntityLargeRailCore railCore = (TileEntityLargeRailCore) tileEntity;
 
