@@ -10,6 +10,9 @@ export default defineConfig({
       '/images': 'http://localhost:4500',
     },
   },
+  define: {
+    'process.env': {},
+  },
   build: {
     outDir: 'dist',
   },
