@@ -10,12 +10,7 @@ import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
 import net.nobukym.rtma.data.PlayerPositionExporter;
 import net.nobukym.rtma.data.PathProvider;
-import net.nobukym.rtma.rail.PointCollector;
-import net.nobukym.rtma.rail.RailCollector;
-import net.nobukym.rtma.rail.RailDataExporter;
-import net.nobukym.rtma.rail.RailMapConverter;
-import net.nobukym.rtma.rail.RailSegment;
-import net.nobukym.rtma.rail.RailStore;
+import net.nobukym.rtma.rail.*;
 import net.nobukym.rtma.time.RtmaCalendarData;
 import net.nobukym.rtma.time.RtmaDateTime;
 import net.nobukym.rtma.time.RtmaTime;
@@ -44,8 +39,9 @@ public class TickHandlerServer {
     // どのくらいの頻度でチェックするか(20tick=1秒)
     private static final int EXPORT_INTERVAL_TICKS = 100; // 5秒ごと
 
-    // 前回書き出した内容のハッシュ値。同じなら書き出しをスキップする
-    private static long lastHash = -1;
+    // 前回書き出した内容のハッシュ値(ジオメトリ/状態それぞれ)。同じなら書き出しをスキップする
+    private static long lastGeometryHash = -1;
+    private static long lastStateHash = -1;
 
     // isMainRoute/isActiveRouteの調査用。片渡り線・両渡り線の調査のため再度有効化
     private static final boolean DEBUG_POINTS = true;
@@ -146,25 +142,43 @@ public class TickHandlerServer {
             liveSegments.add(RailMapConverter.convert(rail, world, railToPoints));
         }
 
-        File outputFile = PathProvider.getRailsFile(world);
+        File geometryFile = PathProvider.getRailsGeometryFile(world);
+        File stateFile = PathProvider.getRailsStateFile(world);
 
         // liveSegments(今回チャンクロード中に見えた分)を、圏外で凍結中の既存データと
         // マージする。これにより、未ロードチャンク内のレールがrails.jsonから
         // 消えてしまう問題を解消する(詳細はRailStoreのクラスコメント参照)。
-        List<RailSegment> mergedSegments = RailStore.merge(liveSegments, world, world.getTotalWorldTime(), outputFile);
+        List<RailSegment> mergedSegments = RailStore.merge(liveSegments, world, world.getTotalWorldTime(),
+                geometryFile, stateFile);
 
-        String json = RailDataExporter.toJson(mergedSegments);
-        long hash = RailDataExporter.computeHash(json);
+        // 静的ジオメトリと動的状態を分けて書き出す。分岐器の切替のたびに変わるのは
+        // 状態側だけなので、ハッシュも別々に持って独立にスキップ判定する
+        // (ジオメトリは新しいレールが敷設/撤去されない限りほとんど書き込みが発生しなくなる)。
+        List<RailSegmentSplitter.GeometryView> geometryList = RailSegmentSplitter.toGeometryList(mergedSegments);
+        List<RailSegmentSplitter.StateView> stateList = RailSegmentSplitter.toStateList(mergedSegments);
 
+        String geometryJson = RailDataExporter.toJson(geometryList);
+        String stateJson = RailDataExporter.toJson(stateList);
+        long geometryHash = RailDataExporter.computeHash(geometryJson);
+        long stateHash = RailDataExporter.computeHash(stateJson);
 
-        if (hash == lastHash) {
-            // 前回と内容が同じなので、ディスクへの書き出しはスキップする
+        boolean geometryChanged = geometryHash != lastGeometryHash;
+        boolean stateChanged = stateHash != lastStateHash;
+
+        if (!geometryChanged && !stateChanged) {
+            // どちらも前回と内容が同じなので、ディスクへの書き出しはスキップする
             return;
         }
 
         try {
-            RailDataExporter.writeToFile(json, outputFile);
-            lastHash = hash;
+            if (geometryChanged) {
+                RailDataExporter.writeToFile(geometryJson, geometryFile);
+                lastGeometryHash = geometryHash;
+            }
+            if (stateChanged) {
+                RailDataExporter.writeToFile(stateJson, stateFile);
+                lastStateHash = stateHash;
+            }
 
             int liveCount = 0;
             for (RailSegment seg : mergedSegments) {
@@ -173,16 +187,22 @@ public class TickHandlerServer {
                 }
             }
 
-            Rtma.LOGGER.info("rails.jsonを書き出しました (全{}件、うちlive{}件/凍結{}件、ポイント{}件): {}",
+            Rtma.LOGGER.info("rails-geometry.json{}/rails-state.json{}を書き出しました (全{}件、うちlive{}件/凍結{}件、ポイント{}件)",
+                    geometryChanged ? "" : "(変化なし・スキップ)",
+                    stateChanged ? "" : "(変化なし・スキップ)",
                     mergedSegments.size(), liveCount, mergedSegments.size() - liveCount,
-                    allPoints.size(), outputFile.getAbsolutePath());
+                    allPoints.size());
         } catch (IOException e) {
-            Rtma.LOGGER.error("rails.jsonの書き出しに失敗しました", e);
+            Rtma.LOGGER.error("rails-geometry.json/rails-state.jsonの書き出しに失敗しました", e);
         }
     }
 
 
 
 
-
 }
+
+
+
+
+

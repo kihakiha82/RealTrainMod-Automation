@@ -74,8 +74,18 @@ function computeSpeedLimitProfile(points, options) {
 
     if (p.R !== null && p.R !== undefined) {
       const thetaRad = degToRad(p.cant ?? 0) + cdRad;
-      const curveLimit = K * Math.sqrt(Math.abs(p.R) * Math.tan(thetaRad));
-      limit = Math.min(limit, curveLimit);
+      // cantはRTM上ほぼ無制限に大きな値を設定できてしまうため、cant+Cdが90°を
+      // 超えるとtan()が符号反転して発散し、sqrt(負の値)=NaNになりうる。
+      // NaN/InfinityがJSONに乗るとJSON.stringifyでnullに化け、Java側で
+      // double[]へのデシリアライズがクラッシュする原因になるため、
+      // 物理的に意味のある範囲(0°〜90°未満)にクランプしてから計算する。
+      const clampedThetaRad = Math.min(Math.max(thetaRad, 0), degToRad(89.9));
+      const curveLimit = K * Math.sqrt(Math.abs(p.R) * Math.tan(clampedThetaRad));
+      if (Number.isFinite(curveLimit)) {
+        limit = Math.min(limit, curveLimit);
+      }
+      // curveLimitが非有限(理論上はクランプ済みなので通常発生しないはずだが、念のため)の
+      // 場合は曲線制限を適用せず、vmax等の他の制限だけを使う
     }
 
     for (const sw of switchLimits) {
@@ -84,7 +94,7 @@ function computeSpeedLimitProfile(points, options) {
       }
     }
 
-    return Math.max(0, limit);
+    return Number.isFinite(limit) ? Math.max(0, limit) : 0;
   });
 }
 

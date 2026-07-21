@@ -28,21 +28,92 @@ if (fs.existsSync(clientDistDir)) {
 // (Mod側がログイン時に saves/<world>/rtma/images/players/<name>.png として保存する)
 app.use('/images/players', express.static(path.join(DATA_DIR, 'images', 'players')));
 
-// レールデータ(読み取り専用。Mod側が書き出すrails.jsonをそのまま返す)
-app.get('/api/rails', (req, res) => {
-  const filePath = path.join(DATA_DIR, 'rails.json');
-  fs.readFile(filePath, 'utf-8', (err, data) => {
-    if (err) {
-      res.status(404).json({ error: 'rails.jsonが見つかりません', path: filePath });
-      return;
+// タイムテーブル計算結果の中にNaN/Infinityが紛れていないか検査する。
+// JSON.stringifyはNaN/Infinityをnullに変換してしまうため、そのまま保存すると
+// Mod側(TimetableLoader、double[]へのGsonデシリアライズ)がクラッシュする。
+// 計算ロジック側の不備(想定外の入力による発散)を検出できるよう、
+// 早期に分かりやすいエラーとして弾く。
+function findNonFiniteNumber(value, pathPrefix = '') {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? null : pathPrefix || '(root)';
+  }
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const found = findNonFiniteNumber(value[i], `${pathPrefix}[${i}]`);
+      if (found) return found;
     }
-    res.type('application/json').send(data);
+    return null;
+  }
+  if (value && typeof value === 'object') {
+    for (const key of Object.keys(value)) {
+      const found = findNonFiniteNumber(value[key], pathPrefix ? `${pathPrefix}.${key}` : key);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+// rails-geometry.json(静的ジオメトリ) と rails-state.json(動的な開通状態等) を統合し、
+// 従来のrails.json互換の配列(1レコード=1RailSegment)を返す。
+// Mod側(RailWorldScanner/RailStore)が、分岐器の切替のたびに路線全体を書き直す無駄を
+// 避けるために2ファイルへ分割して書き出すようになったため、Web側はここで統合する。
+// ジオメトリファイルが無い/壊れている場合はnullを返す。状態ファイルが無い場合は
+// (サーバー起動直後などでまだ書き出されていない場合)、状態は空として扱う。
+function loadMergedRails() {
+  const geometryPath = path.join(DATA_DIR, 'rails-geometry.json');
+  const statePath = path.join(DATA_DIR, 'rails-state.json');
+
+  let geometryList;
+  try {
+    geometryList = JSON.parse(fs.readFileSync(geometryPath, 'utf-8'));
+  } catch {
+    return null;
+  }
+
+  let stateList = [];
+  try {
+    stateList = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+  } catch {
+    stateList = [];
+  }
+
+  const stateById = new Map();
+  for (const s of stateList) {
+    if (s && s.id) {
+      stateById.set(s.id, s);
+    }
+  }
+
+  return geometryList.map((g) => {
+    const s = stateById.get(g.id) || {};
+    return {
+      ...g,
+      liveData: s.liveData ?? false,
+      lastUpdatedTick: s.lastUpdatedTick ?? 0,
+      isActiveRoute: s.isActiveRoute ?? null,
+      activeRouteSource: s.activeRouteSource ?? null,
+      pointMovements: s.pointMovements ?? null,
+    };
   });
+}
+
+// レールデータ(読み取り専用。Mod側が書き出すrails-geometry.json/rails-state.jsonを統合して返す)
+app.get('/api/rails', (req, res) => {
+  const merged = loadMergedRails();
+  if (!merged) {
+    res.status(404).json({
+      error: 'rails-geometry.jsonが見つかりません',
+      path: path.join(DATA_DIR, 'rails-geometry.json'),
+    });
+    return;
+  }
+  res.json(merged);
 });
 
 // 選択されたレールを順序付き経路として受け取り、RouteProfile(距離順の1本の配列)を計算する。
 // Web側(mapEngine/railGraph.js#findRailRoute)が組み立てた { id, reversed }[] を受け取り、
-// サーバー側で保持しているrails.json(source of truth)と突き合わせて実体化してから計算する。
+// サーバー側で保持しているrails-geometry.json/rails-state.json(source of truth)と
+// 突き合わせて実体化してから計算する。
 // body: { route: { id: string, reversed: boolean }[] }
 app.post('/api/route-profile', (req, res) => {
   const { route } = req.body;
@@ -51,30 +122,23 @@ app.post('/api/route-profile', (req, res) => {
     return;
   }
 
-  const filePath = path.join(DATA_DIR, 'rails.json');
-  fs.readFile(filePath, 'utf-8', (err, data) => {
-    if (err) {
-      res.status(404).json({ error: 'rails.jsonが見つかりません', path: filePath });
-      return;
-    }
+  const allSegments = loadMergedRails();
+  if (!allSegments) {
+    res.status(404).json({
+      error: 'rails-geometry.jsonが見つかりません',
+      path: path.join(DATA_DIR, 'rails-geometry.json'),
+    });
+    return;
+  }
 
-    let allSegments;
-    try {
-      allSegments = JSON.parse(data);
-    } catch {
-      res.status(500).json({ error: 'rails.jsonのパースに失敗しました' });
-      return;
-    }
-
-    try {
-      const orderedSegments = resolveOrderedSegments(route, allSegments);
-      const profile = buildRouteProfile(orderedSegments);
-      res.json(profile);
-    } catch (resolveErr) {
-      // route中のidがrails.json側に見つからない等(rails.jsonが更新された場合に起こりうる)
-      res.status(400).json({ error: resolveErr.message });
-    }
-  });
+  try {
+    const orderedSegments = resolveOrderedSegments(route, allSegments);
+    const profile = buildRouteProfile(orderedSegments);
+    res.json(profile);
+  } catch (resolveErr) {
+    // route中のidがrails-geometry.json側に見つからない等(路線が更新された場合に起こりうる)
+    res.status(400).json({ error: resolveErr.message });
+  }
 });
 
 // 簡易運行: 経路(始点→終点)+車両+出発時刻から「簡易スタフ」(発車・到着時刻と
@@ -105,14 +169,14 @@ app.post('/api/simple-schedule', (req, res) => {
     return;
   }
 
-  const railsPath = path.join(DATA_DIR, 'rails.json');
   const specsPath = path.join(DATA_DIR, 'trainspecs.json');
 
-  let allSegments;
-  try {
-    allSegments = JSON.parse(fs.readFileSync(railsPath, 'utf-8'));
-  } catch {
-    res.status(404).json({ error: 'rails.jsonが見つかりません', path: railsPath });
+  const allSegments = loadMergedRails();
+  if (!allSegments) {
+    res.status(404).json({
+      error: 'rails-geometry.jsonが見つかりません',
+      path: path.join(DATA_DIR, 'rails-geometry.json'),
+    });
     return;
   }
 
@@ -185,13 +249,28 @@ app.post('/api/simple-schedule', (req, res) => {
     departureClock: entry.departureTick != null ? withClock(entry.departureTick) : null,
   }));
 
-  res.json({
+  const responseBody = {
     trainResourceName,
     departure,
     brakeSpecEstimated: true,
     totalLength: profile.totalLength,
     schedule,
-  });
+  };
+
+  // NaN/Infinityが紛れたまま保存すると、Mod側でのdouble[]デシリアライズが
+  // クラッシュしてMinecraftサーバー自体が落ちてしまう(過去に発生した実例)。
+  // 保存・応答前に必ず検査し、混入していたら500エラーとしてここで止める。
+  const badPath = findNonFiniteNumber(responseBody);
+  if (badPath) {
+    console.error(`[simple-schedule] 非有限な値(NaN/Infinity)が計算結果に含まれています: ${badPath}`);
+    res.status(500).json({
+      error: `時刻表計算の結果に不正な値(NaN/Infinity)が含まれています: ${badPath}。` +
+          '経路上のレール(極端なカント値等)を確認してください。',
+    });
+    return;
+  }
+
+  res.json(responseBody);
 });
 
 // 車両性能データ(読み取り専用。サーバー起動時に1回だけMod側が書き出すtrainspecs.jsonをそのまま返す)

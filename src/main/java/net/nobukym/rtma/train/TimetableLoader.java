@@ -68,6 +68,18 @@ public final class TimetableLoader {
         } catch (JsonSyntaxException e) {
             Rtma.LOGGER.warn("TimetableLoader: {}の構文が不正です: {}", name, e.getMessage());
             return null;
+        } catch (RuntimeException e) {
+            // Gsonはここで想定外の例外(例: NaN/Infinityが混入してJSON上nullになった値を
+            // プリミティブ配列(double[]等)へデシリアライズしようとしたときのIllegalArgumentException)を
+            // 投げることがある。これをキャッチしないと、tick処理中の呼び出し元
+            // (AutopilotManager)まで例外が突き抜け、Minecraftサーバー自体が
+            // 毎tickクラッシュする致命的な事態になる(実際に発生した実例)。
+            // 1つのスタフファイルが壊れているだけで自動運転機能全体・サーバー全体を
+            // 巻き込まないよう、ここで止めてnullを返す(=このtickではスタフ無し扱い)。
+            Rtma.LOGGER.error("TimetableLoader: {}の読み込み中に予期しないエラーが発生しました。" +
+                            "このスタフは無視します(NaN/Infinityが計算結果に混入していないか確認してください): {}",
+                    name, e.toString());
+            return null;
         }
     }
 

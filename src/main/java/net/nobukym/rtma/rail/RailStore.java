@@ -53,36 +53,41 @@ public final class RailStore {
 
     private RailStore() {}
 
-    /** 起動後1回だけ、既存のrails.jsonがあれば読み込んでstoreをシードする */
-    private static void seedFromDiskIfNeeded(File railsFile) {
+    /** 起動後1回だけ、既存のrails-geometry.json/rails-state.jsonがあれば読み込んでstoreをシードする */
+    private static void seedFromDiskIfNeeded(File geometryFile, File stateFile) {
         if (seeded) {
             return;
         }
         seeded = true;
 
-        if (railsFile == null || !railsFile.exists()) {
+        if (geometryFile == null || !geometryFile.exists()) {
             return;
         }
 
         try {
-            String json = new String(Files.readAllBytes(railsFile.toPath()), StandardCharsets.UTF_8);
-            Type listType = new TypeToken<List<RailSegment>>() {}.getType();
-            List<RailSegment> existing = GSON.fromJson(json, listType);
+            Type geometryListType = new TypeToken<List<RailSegmentSplitter.GeometryView>>() {}.getType();
+            String geometryJson = new String(Files.readAllBytes(geometryFile.toPath()), StandardCharsets.UTF_8);
+            List<RailSegmentSplitter.GeometryView> geometryList = GSON.fromJson(geometryJson, geometryListType);
 
-            if (existing != null) {
-                for (RailSegment seg : existing) {
-                    if (seg.id == null) {
-                        continue;
-                    }
-                    // 起動直後はまだどのチャンクもロード確認していないので、
-                    // 一旦すべて凍結扱いにしておく(見え次第LIVEに更新される)
-                    seg.liveData = false;
-                    store.put(seg.id, seg);
-                }
-                Rtma.LOGGER.info("RailStore: 既存のrails.jsonから{}件のレールデータを読み込みました", existing.size());
+            List<RailSegmentSplitter.StateView> stateList = null;
+            if (stateFile != null && stateFile.exists()) {
+                Type stateListType = new TypeToken<List<RailSegmentSplitter.StateView>>() {}.getType();
+                String stateJson = new String(Files.readAllBytes(stateFile.toPath()), StandardCharsets.UTF_8);
+                stateList = GSON.fromJson(stateJson, stateListType);
             }
+
+            List<RailSegment> existing = RailSegmentSplitter.merge(geometryList, stateList);
+
+            for (RailSegment seg : existing) {
+                // 起動直後はまだどのチャンクもロード確認していないので、
+                // 一旦すべて凍結扱いにしておく(見え次第LIVEに更新される)
+                seg.liveData = false;
+                store.put(seg.id, seg);
+            }
+            Rtma.LOGGER.info("RailStore: 既存のrails-geometry.json/rails-state.jsonから{}件のレールデータを読み込みました",
+                    existing.size());
         } catch (Exception e) {
-            Rtma.LOGGER.error("RailStore: rails.jsonの読み込みに失敗しました。空の状態から開始します", e);
+            Rtma.LOGGER.error("RailStore: rails-geometry.json/rails-state.jsonの読み込みに失敗しました。空の状態から開始します", e);
         }
     }
 
@@ -92,13 +97,15 @@ public final class RailStore {
      * @param liveSegments 今回のポーリングでチャンクロード中に確認できたセグメント
      * @param world        撤去/凍結判定(isBlockLoaded)に使うワールド
      * @param currentTick  liveSegmentsに刻むタイムスタンプ(world.getTotalWorldTime()を想定)
-     * @param railsFile    初回シード用の既存rails.jsonのパス(null可)
+     * @param geometryFile 初回シード用の既存rails-geometry.jsonのパス(null可)
+     * @param stateFile    初回シード用の既存rails-state.jsonのパス(null可)
      */
     public static synchronized List<RailSegment> merge(List<RailSegment> liveSegments,
                                                        WorldServer world,
                                                        long currentTick,
-                                                       File railsFile) {
-        seedFromDiskIfNeeded(railsFile);
+                                                       File geometryFile,
+                                                       File stateFile) {
+        seedFromDiskIfNeeded(geometryFile, stateFile);
 
         Set<String> seenIds = new HashSet<>();
 

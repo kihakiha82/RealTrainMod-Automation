@@ -27,8 +27,14 @@ public final class PathProvider {
         return rtmaDir;
     }
 
-    public static File getRailsFile(World world) {
-        return new File(getWorldRtmaDir(world), "rails.json");
+    /** 静的ジオメトリ部分(座標・カーブ形状等。分岐器切替では変化しない) */
+    public static File getRailsGeometryFile(World world) {
+        return new File(getWorldRtmaDir(world), "rails-geometry.json");
+    }
+
+    /** 動的な状態部分(開通状態・liveData等。分岐器切替のたびに変わりうる) */
+    public static File getRailsStateFile(World world) {
+        return new File(getWorldRtmaDir(world), "rails-state.json");
     }
 
     /** Web側の初期表示(プレイヤー位置を中心にする)用に書き出すプレイヤー座標ファイル */
