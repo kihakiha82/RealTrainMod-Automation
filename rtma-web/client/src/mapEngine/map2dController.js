@@ -32,6 +32,9 @@
  *   React側(App.jsx)のstateへ橋渡しする想定。
  */
 import arrowIconUrl from '../assets/arrow-icon.svg';
+import { STOP_ICON_SHAPES } from '../iconShapes';
+
+const STOP_ICON_SYMBOL_BY_ID = Object.fromEntries(STOP_ICON_SHAPES.map((s) => [s.id, s.symbol]));
 
 export function createMap2DController(container, options = {}) {
   const { onSelectionChange, onContextMenu, onRoutePointChange } = options;
@@ -44,7 +47,10 @@ export function createMap2DController(container, options = {}) {
   const state = {
     segments: [],
     player: null,
-    routePath: null, // { id, reversed }[]
+    routePath: null, // { id, reversed }[](簡易運行のプレビュー経路)
+    routeEditPath: null, // { id, reversed, sStart?, sEnd? }[](路線編集モードのプレビュー経路。routePathと見た目のロジックを共有する)
+    routeWaypoints: [], // { segId, s, x, z }[](路線編集モードの経由点。番号付きマーカーで表示)
+    stations: [], // Station[](/api/stationsそのまま。駅の長方形・番線の枠線・停車位置アイコンの描画に使う)
     routeStart: null, // { segId, s, x, z } | null(レール途中の始点)
     routeEnd: null,   // { segId, s, x, z } | null(レール途中の終点)
     scale: 1,
@@ -115,6 +121,7 @@ export function createMap2DController(container, options = {}) {
       text: get('--text-dim', '#7d8893'),
       select: get('--select', '#4da3ff'),
       route: get('--route', '#ffb700'), // 経路ハイライト色(デフォルト: オレンジ)
+      waypoint: get('--purple', '#a374ff'), // 路線編集の経由点マーカー色(デフォルト: 紫。始点/終点の緑/赤と区別するため)
     };
   }
   const colors = readColors();
@@ -174,6 +181,16 @@ export function createMap2DController(container, options = {}) {
     return result;
   }
 
+  /**
+   * segの座標系での距離sにある1点のワールド座標を返す(pointsInRangeのsStart=sEnd特殊ケース)。
+   * 停車位置(StopVariant.s)を実際の地図上の点に変換するのに使う。
+   * sがセグメント長を超える/負など不正な場合はnullを返す。
+   */
+  function pointAtDistance(seg, s) {
+    const points = pointsInRange(seg, s, s);
+    return points.length > 0 ? points[0] : null;
+  }
+
   function fitView() {
     if (state.segments.length === 0) return;
     let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
@@ -219,9 +236,20 @@ export function createMap2DController(container, options = {}) {
   function isInRoute(seg) {
     return state.routePath && state.routePath.some(r => r.id === seg.id);
   }
-  /** そのセグメントに対応する経路参照({ id, reversed, sStart?, sEnd? })を探す */
+  /**
+   * そのセグメントに対応する経路参照({ id, reversed, sStart?, sEnd? })を探す。
+   * 簡易運行(routePath)と路線編集(routeEditPath)は同時に使われない前提だが、
+   * 念のため両方を見て、見た目のハイライトロジック(drawSegment等)を共有する。
+   */
   function findRouteEntry(seg) {
-    return state.routePath ? state.routePath.find(r => r.id === seg.id) : undefined;
+    if (state.routePath) {
+      const found = state.routePath.find(r => r.id === seg.id);
+      if (found) return found;
+    }
+    if (state.routeEditPath) {
+      return state.routeEditPath.find(r => r.id === seg.id);
+    }
+    return undefined;
   }
 
   /** 点(px,pz)から線分(ax,az)-(bx,bz)への最短距離(ワールド座標系) */
@@ -614,15 +642,19 @@ export function createMap2DController(container, options = {}) {
 
   /**
    * 経路全体に沿って矢印テクスチャを描画する
-   * reversed フラグに基づいて矢印の向きを調整
+   * reversed フラグに基づいて矢印の向きを調整。
+   * 簡易運行(routePath)・路線編集(routeEditPath)の両方を対象にする(同時使用は想定しないが、
+   * どちらがセットされていても描画できるようにしておく)。
    */
   function drawDirectionalArrowsAlongPath() {
-    if (!state.routePath || state.routePath.length === 0) return;
+    const paths = [state.routePath, state.routeEditPath].filter(p => p && p.length > 0);
+    if (paths.length === 0) return;
 
     ctx.save();
     ctx.globalAlpha = 0.85;
 
-    for (const routeEntry of state.routePath) {
+    for (const path of paths) {
+    for (const routeEntry of path) {
       const seg = state.segments.find(s => s.id === routeEntry.id);
       if (!seg) continue;
 
@@ -661,6 +693,7 @@ export function createMap2DController(container, options = {}) {
           drawArrowIcon(arrowX, arrowY, angle, ARROW_SIZE);
         }
       }
+    }
     }
 
     ctx.restore();
@@ -756,6 +789,148 @@ export function createMap2DController(container, options = {}) {
     drawRoutePointMarker(state.routeEnd, '終点', colors.idle);
   }
 
+  /** 路線編集モードの経由点を、順序が分かる番号付きマーカーとして描画する */
+  function drawRouteWaypointMarkers() {
+    state.routeWaypoints.forEach((point, index) => {
+      drawRoutePointMarker(point, String(index + 1), colors.waypoint);
+    });
+  }
+
+  /**
+   * 駅の範囲を示す半透明の長方形を描画する。
+   * バウンディングボックスは「その駅の全番線にある停車位置(StopVariant)の
+   * ワールド座標」の集合から算出する(番線自体は物理的にセグメント全体に
+   * 紐づく実体で、駅としての"範囲"を表す固有の点を持たないため)。
+   * 【既知の制約】まだ停車位置が1つも設定されていない番線は、この矩形が
+   * 必ずしもその番線の位置を横切ることを保証しない(停車位置が無いと
+   * バウンディングボックスの計算材料が無いため)。停車位置を追加すれば
+   * 矩形はそれに合わせて広がる。
+   */
+  function drawStationRectangles() {
+    const padding = 3; // ワールド座標(ブロック)単位の余白
+
+    for (const station of state.stations) {
+      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+
+      for (const track of station.tracks ?? []) {
+        const seg = state.segments.find((s) => s.id === track.segmentId);
+        if (!seg) continue;
+        for (const stop of track.stops ?? []) {
+          const point = pointAtDistance(seg, stop.s);
+          if (!point) continue;
+          minX = Math.min(minX, point.x);
+          maxX = Math.max(maxX, point.x);
+          minZ = Math.min(minZ, point.z);
+          maxZ = Math.max(maxZ, point.z);
+        }
+      }
+
+      if (!isFinite(minX)) continue; // 停車位置が1つも無ければ矩形は描かない
+
+      const [sx0, sy0] = toScreen(minX - padding, minZ - padding);
+      const [sx1, sy1] = toScreen(maxX + padding, maxZ + padding);
+      const x = Math.min(sx0, sx1), y = Math.min(sy0, sy1);
+      const w = Math.abs(sx1 - sx0), h = Math.abs(sy1 - sy0);
+      const color = station.color || colors.waypoint;
+
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.15;
+      ctx.fillRect(x, y, w, h);
+      ctx.globalAlpha = 0.7;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(x + 0.5, y + 0.5, w, h);
+
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = color;
+      ctx.font = 'bold 12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(station.name, x + w / 2, y - 4);
+      ctx.restore();
+    }
+  }
+
+  /**
+   * 各番線に、レールに沿って上下2本の枠線(境界線)を描き、番線名を近くに表示する。
+   * オフセットは画面ピクセル単位で固定し(ワールド座標単位だとズーム倍率によって
+   * 見た目の太さが変わってしまうため)、隣接点との方向から法線ベクトルを計算する。
+   */
+  function drawTrackOverlays() {
+    const offsetPx = 3;
+
+    for (const station of state.stations) {
+      for (const track of station.tracks ?? []) {
+        const seg = state.segments.find((s) => s.id === track.segmentId);
+        if (!seg) continue;
+        const points = pointsOf(seg);
+        if (points.length < 2) continue;
+        const color = track.color || colors.route;
+
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.globalAlpha = 0.85;
+
+        for (const sign of [1, -1]) {
+          ctx.beginPath();
+          for (let i = 0; i < points.length; i++) {
+            const [sx, sy] = toScreen(points[i].x, points[i].z);
+            // 隣接点(無ければ反対側の隣接点を使い、方向を反転する)から法線方向を求める
+            const hasNext = points[i + 1] != null;
+            const neighbor = hasNext ? points[i + 1] : points[i - 1];
+            const [nsx, nsy] = toScreen(neighbor.x, neighbor.z);
+            let dx = nsx - sx, dy = nsy - sy;
+            if (!hasNext) { dx = -dx; dy = -dy; }
+            const len = Math.hypot(dx, dy) || 1;
+            const nx = (-dy / len) * offsetPx * sign;
+            const ny = (dx / len) * offsetPx * sign;
+            const px = sx + nx, py = sy + ny;
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+          }
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        // 番線名のラベルは、線の中間点付近に表示する
+        const mid = points[Math.floor(points.length / 2)];
+        const [msx, msy] = toScreen(mid.x, mid.z);
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.font = '11px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(track.name, msx + offsetPx + 4, msy);
+        ctx.restore();
+      }
+    }
+  }
+
+  /** 各停車位置に、選択されたアイコン(Unicode文字。色分け可能)を描画する */
+  function drawStopIcons() {
+    for (const station of state.stations) {
+      for (const track of station.tracks ?? []) {
+        const seg = state.segments.find((s) => s.id === track.segmentId);
+        if (!seg) continue;
+        for (const stop of track.stops ?? []) {
+          const point = pointAtDistance(seg, stop.s);
+          if (!point) continue;
+          const [sx, sy] = toScreen(point.x, point.z);
+          const symbol = STOP_ICON_SYMBOL_BY_ID[stop.icon] || STOP_ICON_SYMBOL_BY_ID['circle-filled'];
+
+          ctx.save();
+          ctx.fillStyle = stop.color || colors.waypoint;
+          ctx.font = '14px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(symbol, sx, sy);
+          ctx.restore();
+        }
+      }
+    }
+  }
+
   /** 矩形選択中、ドラッグ範囲を半透明の矩形として表示する */
   function drawSelectionRect() {
     if (!state.rectSelecting) return;
@@ -783,7 +958,10 @@ export function createMap2DController(container, options = {}) {
     if (!state.hasCamera) return; // まだ視点が決まっていない間は描画しない
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     drawGridLines();
-    
+
+    // 駅の範囲(長方形)は背景として、レール本体より先に描く
+    drawStationRectangles();
+
     // 通常セグメント → 矢印 → 選択セグメント → プレイヤー → 選択矩形 → ルーラー
     const selectedSegs = [];
     for (const seg of state.segments) {
@@ -795,9 +973,14 @@ export function createMap2DController(container, options = {}) {
     drawDirectionalArrowsAlongPath();
     
     for (const seg of selectedSegs) drawSegment(seg);
-    
+
+    // 番線の枠線・停車位置アイコンは、レール本体より前面に描く
+    drawTrackOverlays();
+    drawStopIcons();
+
     drawPlayer();
     drawRoutePointMarkers();
+    drawRouteWaypointMarkers();
     drawSelectionRect();
     drawRulers();
   }
@@ -1002,6 +1185,24 @@ export function createMap2DController(container, options = {}) {
     /** 経路セグメント列({ id, reversed }[])を更新する。nullで非表示にできる */
     setRoutePath(routePath) {
       state.routePath = routePath || null;
+      draw();
+    },
+    /**
+     * 路線編集モードのプレビュー経路({ id, reversed, sStart?, sEnd? }[])を更新する。
+     * routePathと見た目のロジック(ハイライト色・矢印)を共有する。nullで非表示にできる。
+     */
+    setRouteEditPath(routeEditPath) {
+      state.routeEditPath = routeEditPath || null;
+      draw();
+    },
+    /** 路線編集モードの経由点({ segId, s, x, z }[])を更新する。番号付きマーカーで表示される */
+    setRouteWaypoints(waypoints) {
+      state.routeWaypoints = waypoints || [];
+      draw();
+    },
+    /** 駅一覧(/api/stationsそのまま)を更新する。駅の長方形・番線の枠線・停車位置アイコンの描画に使う */
+    setStations(stations) {
+      state.stations = stations || [];
       draw();
     },
     /** 簡易運行の始点({ segId, s, x, z })を更新する。nullで非表示にできる */

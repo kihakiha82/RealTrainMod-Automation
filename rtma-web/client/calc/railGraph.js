@@ -1,22 +1,14 @@
 /**
- * 【calc/railGraph.js との重複についての注記】
- * このファイルは calc/railGraph.js (CommonJS版、server.jsがrequire()で使う) と
- * 完全に同じロジックを持つ、ブラウザ(Vite/ESM)向けの複製。
+ * 【移設に関する注記】
+ * 元々 client/src/mapEngine/railGraph.js (ESモジュール、Vite/ブラウザ専用) にあったが、
+ * 中身はワールド座標・DOM・ブラウザAPIに依存しない純粋関数だったため、
+ * サーバー側(routes.jsonのpath算出等)からもrequireできるよう、他の計算モジュールと
+ * 同じ calc/ (CommonJS) に移設した。
  *
- * 以前は calc/railGraph.js への薄いre-export(`import ... from '../../calc/railGraph'`)
- * にしていたが、calc/package.json が `"type": "commonjs"` を明示しているため、
- * Vite側で @rollup/plugin-commonjs によるCJS→ESM変換が必要になり、
- * これが `vite build`(Rollup経由)では動作するのに `vite dev`(esbuildベース)では
- * 動作しない、という環境依存の不具合を引き起こした
- * (エラー例: "Failed to resolve import commonjsHelpers.js")。
- *
- * server.js側はNodeのrequire()でCJSのまま読み込む必要があり、ブラウザ側はESMの
- * import文で読み込みたいため、両立させるプラグイン変換に頼るより、
- * 「ロジック本体はDOM・ブラウザAPIに依存しない純粋関数なので、単純に複製する」
- * 方が開発環境に依存しない頑丈な解決策と判断した。
- *
- * 【重要】このファイルとcalc/railGraph.jsは、末尾のexport文以外は完全に同一のはず。
- * ロジックを変更する場合は、必ず両方のファイルに同じ変更を反映すること。
+ * 【重要】client/src/mapEngine/railGraph.js は、このファイルのESM版の複製として
+ * 独立に存在している(re-exportではない。Vite dev serverでのCJS→ESM変換の不具合を
+ * 避けるため、詳細は同ファイルのコメント参照)。ロジックを変更する場合は、
+ * 必ず両方のファイルに同じ変更を反映すること。
  *
  * rails.json由来のセグメント配列から隣接グラフを構築し、
  * 「始点→終点」の経路を、実際のレール長の合計が最小になるように探索する(Dijkstra)。
@@ -38,7 +30,6 @@
  *                「そのセグメント自身の座標系(reversedに関係なく)」でのトリム範囲を表す。
  *                省略時(中間セグメント)はセグメント全体を使う。
  */
-
 
 /** 座標を丸めて文字列化する(Mod側RailMapConverter#formatPointと同じ丸め方に揃える) */
 function nodeKey(x, y, z) {
@@ -217,4 +208,4 @@ function findRailRoute(segments, routeStart, routeEnd) {
   });
 }
 
-export { buildRailGraph, findRailRoute };
+module.exports = { buildRailGraph, findRailRoute };

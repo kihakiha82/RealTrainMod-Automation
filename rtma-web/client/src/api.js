@@ -141,3 +141,81 @@ export async function unassignTrain(uuid) {
   }
   return res.json();
 }
+
+/** 路線(Route)一覧を取得する */
+export async function fetchRoutes() {
+  const res = await fetch('/api/routes');
+  if (!res.ok) throw new Error(`路線一覧の取得に失敗しました (HTTP ${res.status})`);
+  return res.json();
+}
+
+/**
+ * 路線を新規作成/更新(upsert)する。既存を更新する場合はbody.idを含めること
+ * (含めない場合は新規作成扱いになる)。
+ * body: { id?, name, tags?, waypoints: { id?, segId, s, x?, z?, stationId?, trackId? }[] }
+ * pathはサーバー側で再計算されるので、呼び出し側は含めなくてよい。
+ */
+export async function saveRoute(body) {
+  const res = await fetch('/api/routes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.error || `路線の保存に失敗しました (HTTP ${res.status})`);
+  }
+  return res.json();
+}
+
+/** 路線を削除する */
+export async function deleteRoute(id) {
+  const res = await fetch(`/api/routes/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `路線の削除に失敗しました (HTTP ${res.status})`);
+  }
+  return res.json();
+}
+
+/** 駅(Station)一覧を取得する(路線編集時の駅アタッチ機能で使う想定) */
+export async function fetchStations() {
+  const res = await fetch('/api/stations');
+  if (!res.ok) throw new Error(`駅一覧の取得に失敗しました (HTTP ${res.status})`);
+  return res.json();
+}
+
+/**
+ * 駅を削除する。他のRouteから参照されている場合、force指定が無ければ409になり、
+ * body.referencingRoutesに参照している路線一覧が入る(例外としてではなく、
+ * 呼び出し側が明示的にforce再実行できるよう、この場合はエラーを投げず結果を返す)。
+ */
+export async function deleteStation(id, { force = false } = {}) {
+  const url = `/api/stations/${encodeURIComponent(id)}${force ? '?force=true' : ''}`;
+  const res = await fetch(url, { method: 'DELETE' });
+  const body = await res.json().catch(() => ({}));
+  if (res.status === 409) {
+    return { conflict: true, referencingRoutes: body.referencingRoutes ?? [] };
+  }
+  if (!res.ok) {
+    throw new Error(body.error || `駅の削除に失敗しました (HTTP ${res.status})`);
+  }
+  return { conflict: false, ...body };
+}
+
+/**
+ * 駅を新規作成/更新(upsert)する。既存を更新する場合はbody.idを含めること。
+ * body: { id?, name, tags?, tracks: { id?, name, segmentId, reversed, stops: {...}[] }[] }
+ */
+export async function saveStation(body) {
+  const res = await fetch('/api/stations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.error || `駅の保存に失敗しました (HTTP ${res.status})`);
+  }
+  return res.json();
+}

@@ -12,7 +12,10 @@ import ContextMenu from './ContextMenu';
  * ref.current.resetView() で親から「全体表示」を呼べる。
  *
  * selectedIds: 選択中セグメントのidのSet(controlled)。
- * routePath: 計算された経路セグメント列({ id, reversed }[])。
+ * routePath: 計算された経路セグメント列({ id, reversed }[])。簡易運行のプレビュー用。
+ * routeEditPath: 路線編集モードのプレビュー経路。routePathと見た目のロジックを共有する。
+ * routeWaypoints: 路線編集モードの経由点({ segId, s, x, z }[])。番号付きマーカーで表示される。
+ * stations: 駅一覧(/api/stationsそのまま)。駅の長方形・番線の枠線・停車位置アイコンの描画に使う。
  * routeStart, routeEnd: 簡易運行の始点/終点({ segId, s, x, z } | null)。地図上に丸マーカーで表示される。
  * onSelectionChange: ユーザーのクリック操作で選択が変わった時に呼ばれる((Set) => void)。
  * onContextMenuAction: 右クリックメニューの項目が実行された時に呼ばれる
@@ -23,7 +26,7 @@ import ContextMenu from './ContextMenu';
  *   (('start'|'end', { segId, s, x, z }) => void)。
  */
 const Map2D = forwardRef(function Map2D(
-  { segments, player, selectedIds, routePath, routeStart, routeEnd, onSelectionChange, onContextMenuAction, onRoutePointChange },
+  { segments, player, selectedIds, routePath, routeEditPath, routeWaypoints, stations, routeStart, routeEnd, onSelectionChange, onContextMenuAction, onRoutePointChange },
   ref
 ) {
   const containerRef = useRef(null);
@@ -68,6 +71,18 @@ const Map2D = forwardRef(function Map2D(
   useEffect(() => {
     controllerRef.current?.setRoutePath(routePath);
   }, [routePath]);
+
+  useEffect(() => {
+    controllerRef.current?.setRouteEditPath(routeEditPath);
+  }, [routeEditPath]);
+
+  useEffect(() => {
+    controllerRef.current?.setRouteWaypoints(routeWaypoints);
+  }, [routeWaypoints]);
+
+  useEffect(() => {
+    controllerRef.current?.setStations(stations);
+  }, [stations]);
 
   useEffect(() => {
     controllerRef.current?.setRouteStart(routeStart);

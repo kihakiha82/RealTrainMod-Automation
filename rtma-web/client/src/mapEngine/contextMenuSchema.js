@@ -25,5 +25,20 @@ export const RAIL_CONTEXT_MENU_SCHEMA = [
       { id: 'simple-operation:edit-point', label: '点の編集' },
     ],
   },
+  {
+    id: 'route-edit',
+    label: '路線編集',
+    children: [
+      { id: 'route-edit:add-waypoint', label: '経由点として追加' },
+    ],
+  },
+  {
+    id: 'station-edit',
+    label: '駅編集',
+    children: [
+      { id: 'station-edit:add-track', label: 'ここに番線を追加' },
+      { id: 'station-edit:set-stop-position', label: 'ここを停車位置に設定' },
+    ],
+  },
   { id: 'show-rail-info', label: 'レール情報の表示' },
 ];
