@@ -2,9 +2,9 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { buildRouteProfile } = require('../client/calc/routeProfile');
+const { buildRouteProfile, absoluteSToLocal } = require('../client/calc/routeProfile');
 const { resolveOrderedSegments } = require('../client/calc/orderedRouteResolver');
-const { orderSegmentChain, deriveBoundaryPoints } = require('../client/calc/railGraph');
+const { orderSegmentChain, deriveBoundaryPoints, findRailRoute } = require('../client/calc/railGraph');
 const { computeSpeedLimitProfile } = require('../client/calc/speedLimitProfile');
 const { computeAccelProfile, DEFAULT_G } = require('../client/calc/accelProfile');
 const { generateTimetable, tickToClock, clockToTick, TICKS_PER_SECOND } = require('../client/calc/timetableGenerator');
@@ -631,6 +631,182 @@ function downgradeReferencingWaypoints(routes, stationId, trackId = null) {
  *   (track.segments)を導出するのに使う(再設計仕様書1.1.1節)。
  *   Routeのwaypoints→pathと同じ「真実源(segmentIds)をサーバー側で毎回再計算する」パターン。
  */
+// ── 構内ルート事前生成(再設計仕様書4章) ──────────────────────────────────
+//
+// 駅データ(番線・停車位置・境界点)の保存の都度、想定されうる構内ルートを
+// 全パターン事前生成し、station.internalRoutesとしてキャッシュする。
+// ダイヤ生成時にその場でDijkstraを回す必要が無くなる(Route.pathやTrack.segments
+// と同じ「真実源から毎回再計算・永続化」パターン)。
+
+/**
+ * 境界点(の代表するsegmentEnds[0])を、findRailRouteが受け取れる
+ * { segId, s } 形式に変換する。境界点は定義上必ずセグメントの端点(s=0またはs=length)
+ * に一致するので、仮想ノードのトリム計算は発生しない。
+ */
+function boundaryToRoutePoint(boundary, allSegments) {
+  const rep = boundary.segmentEnds?.[0];
+  if (!rep) return null;
+  const seg = allSegments.find((s) => s.id === rep.segmentId);
+  if (!seg) return null;
+  return { segId: rep.segmentId, s: rep.end === 'start' ? 0 : (seg.length ?? 0) };
+}
+
+/**
+ * 番線内累積距離(stop.s)を、findRailRouteが受け取れる{ segId, s }形式に変換する。
+ * 0番で実装したbuildRouteProfile/absoluteSToLocal(セグメント列→絶対s変換)を、
+ * 番線自身のsegments列に対して使う(1.1.1節で共通ユーティリティ化した狙い通りの再利用)。
+ */
+function stopToRoutePoint(track, stop, allSegments) {
+  const orderedSegments = (track.segments ?? []).map((ts) => {
+    const seg = allSegments.find((s) => s.id === ts.segmentId);
+    return seg ? { ...seg, reversed: ts.reversed } : null;
+  });
+  if (orderedSegments.some((s) => s == null)) return null;
+
+  const profile = buildRouteProfile(orderedSegments);
+  const local = absoluteSToLocal(profile.segmentOffsets, stop.s);
+  if (!local) return null;
+  return { segId: local.id, s: local.localS };
+}
+
+/**
+ * 駅の構内範囲(railSegmentIds)・番線・停車位置・境界点から、想定されうる
+ * 構内ルートを全パターン生成する(4.3節)。
+ *
+ * 生成するのは以下の3種類:
+ *   1. enter:   入口(境界点) → 停車位置
+ *   2. exit:    停車位置 → 出口(境界点)
+ *   3. through: 入口(境界点) → 出口(境界点)(通過、停車しない)
+ *
+ * 境界点タイプ(in/out/both)で組み合わせを絞り込む:
+ *   in専用の境界点  → 入口としてのみ使う(enter, throughの入口側)
+ *   out専用の境界点 → 出口としてのみ使う(exit, throughの出口側)
+ *   both           → 入口・出口どちらでも使う
+ * (単線折返し駅は、進入・進出が同じ境界点になるが、bothのままにしておけば
+ *  enterとexitが両方とも自動生成されるので、折返し駅専用のロジックは不要 — 4.4節)
+ *
+ * 探索グラフは駅のrailSegmentIdsに絞った小さな部分集合に限定する
+ * (findRailRoute自体は汎用なので、渡すsegments集合を絞るだけで済む)。
+ */
+function generateStationInternalRoutes(station, allSegments) {
+  const stationSegments = allSegments.filter((s) => (station.railSegmentIds ?? []).includes(s.id));
+  const boundaries = station.boundaryPoints ?? [];
+  const entryBoundaries = boundaries.filter((b) => (b.type ?? 'both') !== 'out');
+  const exitBoundaries = boundaries.filter((b) => (b.type ?? 'both') !== 'in');
+
+  const allStops = [];
+  for (const track of station.tracks ?? []) {
+    for (const stop of track.stops ?? []) {
+      allStops.push({ track, stop });
+    }
+  }
+
+  const routes = [];
+  let counter = 0;
+  const nextId = () => `introute_${counter++}`;
+
+  // 1. 入口 → 停車位置
+  for (const boundary of entryBoundaries) {
+    const entryPoint = boundaryToRoutePoint(boundary, allSegments);
+    if (!entryPoint) continue;
+    for (const { track, stop } of allStops) {
+      const stopPoint = stopToRoutePoint(track, stop, allSegments);
+      if (!stopPoint) continue;
+      const path = findRailRoute(stationSegments, entryPoint, stopPoint);
+      if (!path) continue; // 到達不能(railSegmentIdsの設定漏れ等)。無効な組み合わせとして自然にスキップ
+      routes.push({
+        id: nextId(), type: 'enter',
+        entryNodeKey: boundary.nodeKey, trackId: track.id, stopId: stop.id,
+        path,
+      });
+    }
+  }
+
+  // 2. 停車位置 → 出口
+  for (const boundary of exitBoundaries) {
+    const exitPoint = boundaryToRoutePoint(boundary, allSegments);
+    if (!exitPoint) continue;
+    for (const { track, stop } of allStops) {
+      const stopPoint = stopToRoutePoint(track, stop, allSegments);
+      if (!stopPoint) continue;
+      const path = findRailRoute(stationSegments, stopPoint, exitPoint);
+      if (!path) continue;
+      routes.push({
+        id: nextId(), type: 'exit',
+        trackId: track.id, stopId: stop.id, exitNodeKey: boundary.nodeKey,
+        path,
+      });
+    }
+  }
+
+  // 3. 入口 → 出口(通過)
+  for (const entryBoundary of entryBoundaries) {
+    const entryPoint = boundaryToRoutePoint(entryBoundary, allSegments);
+    if (!entryPoint) continue;
+    for (const exitBoundary of exitBoundaries) {
+      if (exitBoundary.nodeKey === entryBoundary.nodeKey) continue; // 同一境界点への折返し通過は意味を持たないため除外
+      const exitPoint = boundaryToRoutePoint(exitBoundary, allSegments);
+      if (!exitPoint) continue;
+      const path = findRailRoute(stationSegments, entryPoint, exitPoint);
+      if (!path) continue;
+      routes.push({
+        id: nextId(), type: 'through',
+        entryNodeKey: entryBoundary.nodeKey, exitNodeKey: exitBoundary.nodeKey,
+        path,
+      });
+    }
+  }
+
+  return routes;
+}
+
+/**
+ * 生のinternalRoute({ id, type, entryNodeKey?, exitNodeKey?, trackId?, stopId?, path })は
+ * trackId/stopId/nodeKeyのIDだけで読みにくいため、デバッグ用エンドポイント
+ * (GET /api/stations/:id/internal-routes)向けに、番線名・停車位置詳細・境界点座標を
+ * 解決し、経路の総距離(buildRouteProfileで実際のサンプル距離から計算)も添えて返す。
+ */
+function annotateInternalRoute(route, station, allSegments) {
+  const track = route.trackId ? (station.tracks ?? []).find((t) => t.id === route.trackId) : null;
+  const stop = track && route.stopId ? (track.stops ?? []).find((s) => s.id === route.stopId) : null;
+  const entryBoundary = route.entryNodeKey
+      ? (station.boundaryPoints ?? []).find((b) => b.nodeKey === route.entryNodeKey) : null;
+  const exitBoundary = route.exitNodeKey
+      ? (station.boundaryPoints ?? []).find((b) => b.nodeKey === route.exitNodeKey) : null;
+
+  const orderedSegments = route.path
+      .map((p) => {
+        const seg = allSegments.find((s) => s.id === p.id);
+        return seg ? { ...seg, reversed: p.reversed, sStart: p.sStart, sEnd: p.sEnd } : null;
+      })
+      .filter(Boolean);
+  const profile = orderedSegments.length === route.path.length ? buildRouteProfile(orderedSegments) : null;
+
+  return {
+    id: route.id,
+    type: route.type,
+    entry: entryBoundary ? { nodeKey: entryBoundary.nodeKey, x: entryBoundary.x, z: entryBoundary.z, type: entryBoundary.type } : null,
+    exit: exitBoundary ? { nodeKey: exitBoundary.nodeKey, x: exitBoundary.x, z: exitBoundary.z, type: exitBoundary.type } : null,
+    track: track ? { id: track.id, name: track.name } : null,
+    stop: stop ? { id: stop.id, trainResourceName: stop.trainResourceName, carCount: stop.carCount, s: stop.s } : null,
+    segmentCount: route.path.length,
+    // rails-geometry.json側でセグメントが見つからなかった場合(削除済み等)はnull
+    approxLength: profile ? Number(profile.totalLength.toFixed(2)) : null,
+    path: route.path,
+  };
+}
+
+/**
+ * StationのPOST bodyを受け取り、新規id発行・既存id維持・tags正規化・バリデーションを行う。
+ * 戻り値: { station, removedTrackIds } | { error }
+ * removedTrackIds: 更新前には存在したが、今回のbodyに含まれなくなったtrack.id
+ *   (Routeからの参照整合性処理に使う。新規作成時は常に空配列)
+ *
+ * @param allSegments rails-geometry.json相当の全RailSegment。track.segmentIds(順不同の集合、
+ *   クライアントの地図上での複数選択結果)から、実際に辿れる順序+reversedフラグ
+ *   (track.segments)を導出するのに使う(再設計仕様書1.1.1節)。
+ *   Routeのwaypoints→pathと同じ「真実源(segmentIds)をサーバー側で毎回再計算する」パターン。
+ */
 function buildStationFromBody(body, existing, allSegments) {
   const { name, tags, tracks, color, railSegmentIds, boundaryOverrides } = body;
 
@@ -731,7 +907,7 @@ function buildStationFromBody(body, existing, allSegments) {
   const prunedBoundaryOverrides = {};
   for (const [key, value] of Object.entries(finalBoundaryOverrides)) {
     if (validNodeKeys.has(key)) prunedBoundaryOverrides[key] = value;
-    }
+  }
   const boundaryPoints = derivedBoundaries.map((b) => ({
     nodeKey: b.nodeKey,
     x: b.x,
@@ -741,23 +917,60 @@ function buildStationFromBody(body, existing, allSegments) {
     type: prunedBoundaryOverrides[b.nodeKey] ?? 'both',
   }));
 
-  return {
-    station: {
-      id: existing?.id ?? generateId('station'),
-      name: name.trim(),
-      tags: normalizeTags(tags),
-      color: color ?? existing?.color ?? null,
-      tracks: normalizedTracks,
-      railSegmentIds: finalRailSegmentIds,
-      boundaryOverrides: prunedBoundaryOverrides,
-      boundaryPoints,
-    },
-    removedTrackIds,
+  const station = {
+    id: existing?.id ?? generateId('station'),
+    name: name.trim(),
+    tags: normalizeTags(tags),
+    color: color ?? existing?.color ?? null,
+    tracks: normalizedTracks,
+    railSegmentIds: finalRailSegmentIds,
+    boundaryOverrides: prunedBoundaryOverrides,
+    boundaryPoints,
   };
+  // 構内ルートは駅の他のフィールド(番線・停車位置・境界点)が全て確定した後、
+  // 保存の都度再生成する(4.3節: 生成タイミングは駅データ保存時)。
+  station.internalRoutes = generateStationInternalRoutes(station, allSegments);
+
+  return { station, removedTrackIds };
 }
 
 app.get('/api/stations', (req, res) => {
   res.json(readJsonArray(stationFilePath()));
+});
+
+// デバッグ用: 特定駅のinternalRoutes(構内ルート)を、trackId/stopId/nodeKeyを実際の
+// 番線名・停車位置詳細・境界点座標に解決した、読みやすい形式で返す。
+// 想定外のルートが生成されていないかを確認する用途(地図表示は不要とのことなのでJSON応答のみ)。
+app.get('/api/stations/:id/internal-routes', (req, res) => {
+  const stations = readJsonArray(stationFilePath());
+  const station = stations.find((s) => s.id === req.params.id);
+  if (!station) {
+    res.status(404).json({ error: `駅が見つかりません: ${req.params.id}` });
+    return;
+  }
+
+  const allSegments = loadMergedRails();
+  if (!allSegments) {
+    res.status(404).json({
+      error: 'rails-geometry.jsonが見つかりません',
+      path: path.join(DATA_DIR, 'rails-geometry.json'),
+    });
+    return;
+  }
+
+  const routes = (station.internalRoutes ?? []).map((r) => annotateInternalRoute(r, station, allSegments));
+  res.json({
+    stationId: station.id,
+    stationName: station.name,
+    count: routes.length,
+    // typeごとの内訳も添えておく(想定件数とのズレにすぐ気づけるように)
+    countByType: {
+      enter: routes.filter((r) => r.type === 'enter').length,
+      exit: routes.filter((r) => r.type === 'exit').length,
+      through: routes.filter((r) => r.type === 'through').length,
+    },
+    routes,
+  });
 });
 
 // 新規作成 or 更新(既存id指定時はupsert)

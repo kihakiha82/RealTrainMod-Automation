@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import {useEffect, useRef, useState} from 'react';
 import Map2D from './components/Map2D';
 import TimeEditor from './components/TimeEditor';
 import RouteEditPanel from './components/RouteEditPanel';
