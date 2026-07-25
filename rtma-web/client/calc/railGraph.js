@@ -208,4 +208,159 @@ function findRailRoute(segments, routeStart, routeEnd) {
   });
 }
 
-module.exports = { buildRailGraph, findRailRoute };
+/** 座標を丸めて文字列化する(nodeKeyと同じ丸め方。番線の順序決定でも同じ基準で繋がりを見る) */
+function chainNodeKey(x, y, z) {
+  return `${x.toFixed(4)},${y.toFixed(4)},${z.toFixed(4)}`;
+}
+
+/**
+ * 順不同のセグメントID集合(番線を構成する物理セグメント群など)を受け取り、
+ * 座標的な繋がりから「鎖として辿れる順序」+各セグメントのreversedフラグを決定する。
+ *
+ * 番線(Track)は、Routeのwaypointsのような「経路探索(Dijkstra)で繋ぐ」のではなく、
+ * ユーザーが地図上で矩形選択・複数選択したセグメント集合をそのまま使う設計にしたため
+ * (再設計仕様書1.1.1節)、探索ではなく「単純な一本の鎖になっているかどうかの検証+
+ * 順序復元」だけを行う、より単純なアルゴリズムで足りる。
+ *
+ * 前提: 集合が分岐・ループ・非連結を含まない、単純な一本の鎖であること。
+ * そうでない場合はerrorを返す(呼び出し側でユーザーにやり直しを促す)。
+ *
+ * @param allSegments 全RailSegment(rails-geometry.json相当)
+ * @param segmentIds  順序を決定したいセグメントIDの集合(順不同)
+ * @returns { ordered: { segmentId, reversed }[] } | { error: string }
+ */
+function orderSegmentChain(allSegments, segmentIds) {
+  const idSet = new Set(segmentIds);
+  const subset = allSegments.filter((s) => idSet.has(s.id));
+
+  if (subset.length !== idSet.size) {
+    return { error: '指定されたセグメントIDの一部が見つかりません' };
+  }
+  if (subset.length === 0) {
+    return { error: 'セグメントが1つも選択されていません' };
+  }
+  if (subset.length === 1) {
+    return { ordered: [{ segmentId: subset[0].id, reversed: false }] };
+  }
+
+  // 各座標ノードに、そのノードを端点として持つセグメント(このサブセット内)を集める
+  const nodeToEntries = new Map(); // nodeKey -> { seg, end: 'start'|'end' }[]
+  function addEntry(key, entry) {
+    if (!nodeToEntries.has(key)) nodeToEntries.set(key, []);
+    nodeToEntries.get(key).push(entry);
+  }
+  for (const seg of subset) {
+    addEntry(chainNodeKey(seg.startX, seg.startY, seg.startZ), { seg, end: 'start' });
+    addEntry(chainNodeKey(seg.endX, seg.endY, seg.endZ), { seg, end: 'end' });
+  }
+
+  function neighborsAt(key, excludeSegId) {
+    return (nodeToEntries.get(key) || []).filter((e) => e.seg.id !== excludeSegId);
+  }
+
+  // 鎖の「端」候補: start側・end側どちらかで、このサブセット内に隣接セグメントが無いもの
+  const endpoints = [];
+  for (const seg of subset) {
+    const startKey = chainNodeKey(seg.startX, seg.startY, seg.startZ);
+    const endKey = chainNodeKey(seg.endX, seg.endY, seg.endZ);
+    if (neighborsAt(startKey, seg.id).length === 0) endpoints.push({ seg, freeEnd: 'start' });
+    if (neighborsAt(endKey, seg.id).length === 0) endpoints.push({ seg, freeEnd: 'end' });
+  }
+
+  if (endpoints.length !== 2) {
+    return { error: '選択されたセグメントが単純な一本の鎖になっていません(分岐・ループ・非連結の可能性があります)' };
+  }
+
+  const visited = new Set();
+  const ordered = [];
+  let currentSeg = endpoints[0].seg;
+  // freeEnd='start' → そのセグメントはstart→endの向きがそのまま鎖の進行方向(reversed=false)
+  // freeEnd='end'   → end→startが進行方向(reversed=true)
+  let currentReversed = endpoints[0].freeEnd === 'end';
+
+  while (true) {
+    ordered.push({ segmentId: currentSeg.id, reversed: currentReversed });
+    visited.add(currentSeg.id);
+    if (visited.size === subset.length) break;
+
+    const forwardKey = currentReversed
+        ? chainNodeKey(currentSeg.startX, currentSeg.startY, currentSeg.startZ)
+        : chainNodeKey(currentSeg.endX, currentSeg.endY, currentSeg.endZ);
+    const candidates = neighborsAt(forwardKey, currentSeg.id).filter((e) => !visited.has(e.seg.id));
+
+    if (candidates.length !== 1) {
+      return { error: '選択されたセグメントが単純な一本の鎖になっていません(分岐点を含んでいる可能性があります)' };
+    }
+
+    const next = candidates[0];
+    currentSeg = next.seg;
+    // next.end='start' → このセグメントはstart側から鎖に接続 → 進行方向はstart→end(reversed=false)
+    // next.end='end'   → end側から接続 → 進行方向はend→start(reversed=true)
+    currentReversed = next.end === 'end';
+  }
+
+  return { ordered };
+}
+
+/**
+ * 駅の構内範囲(railSegmentIds: 構内とみなすRailSegmentの集合)から、境界点
+ * (構内と構内外の境目にあたる点)を自動導出する。再設計仕様書3.1.1節参照。
+ *
+ * 導出ロジック: railSegmentIdsに含まれる各セグメントの両端点(start/end)について、
+ * 「その座標に接続している他のセグメント」の中に railSegmentIds に含まれないもの
+ * (=構内外のセグメント)が1つでもあれば、そこは境界点である。
+ * buildRailGraph()が返すnodeToSegIds(座標→そこに接続する全セグメントid)を
+ * そのまま再利用でき、新しい探索アルゴリズムは不要(集合演算のみで済む)。
+ *
+ * 【重要】集約の単位は「セグメント×端点」ではなく「物理座標(nodeKey)」。
+ * Y字ポイントの根元のように、1つの物理座標に構内側の複数セグメントの端点が
+ * 接続しているケースでは、セグメント単位で判定すると同じ座標が複数の境界点
+ * エントリとして重複してしまう。境界点は本来ノード(座標)に対して1つ定まる
+ * ものなので、同じnodeKeyに該当する判定結果は1つの境界点にまとめ、
+ * その座標に接続する構内側セグメント端点をすべて`segmentEnds`に記録する。
+ *
+ * 【設計上の注記】ある端点が「どのセグメントにも接続していない」(=ネットワーク全体で
+ * 見ても本当の行き止まり)場合は、境界点として扱わない。系統(Route)が繋がる先が
+ * 存在しない以上、進入経路・退出経路として機能しえないため。
+ *
+ * @param allSegments rails-geometry.json相当の全RailSegment
+ * @param railSegmentIds 構内とみなすセグメントIDの集合
+ * @returns {
+ *   nodeKey: string,
+ *   x, y, z: number,
+ *   segmentEnds: { segmentId, end: 'start'|'end' }[],  // 同じ座標に接続する構内側セグメント端点(通常1件、分岐の根元では2件以上)
+ * }[]
+ */
+function deriveBoundaryPoints(allSegments, railSegmentIds) {
+  const graph = buildRailGraph(allSegments);
+  const idSet = new Set(railSegmentIds);
+  const boundaryByNode = new Map(); // nodeKey -> { nodeKey, x, y, z, segmentEnds }
+
+  for (const segId of railSegmentIds) {
+    const seg = graph.byId.get(segId);
+    const nodes = graph.segNodes.get(segId);
+    if (!seg || !nodes) continue; // 構内範囲に指定されたが、現在のレールデータに存在しないセグメント
+
+    const ends = [
+      { end: 'start', nodeKey: nodes.startNode, x: seg.startX, y: seg.startY, z: seg.startZ },
+      { end: 'end', nodeKey: nodes.endNode, x: seg.endX, y: seg.endY, z: seg.endZ },
+    ];
+
+    for (const { end, nodeKey, x, y, z } of ends) {
+      const touchingIds = graph.nodeToSegIds.get(nodeKey) || new Set();
+      const hasExternalNeighbor = [...touchingIds].some((id) => id !== segId && !idSet.has(id));
+      if (!hasExternalNeighbor) continue;
+
+      let entry = boundaryByNode.get(nodeKey);
+      if (!entry) {
+        entry = { nodeKey, x, y, z, segmentEnds: [] };
+        boundaryByNode.set(nodeKey, entry);
+      }
+      entry.segmentEnds.push({ segmentId: segId, end });
+    }
+  }
+
+  return [...boundaryByNode.values()];
+}
+
+module.exports = { buildRailGraph, findRailRoute, orderSegmentChain, deriveBoundaryPoints };

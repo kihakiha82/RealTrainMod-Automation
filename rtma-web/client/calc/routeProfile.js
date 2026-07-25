@@ -92,25 +92,39 @@ function trimSamples(samples, sStart, sEnd) {
  * orderedSegments: RailSegment[](rails.jsonの配列のうち、経路順に並んだ部分列)
  * 各 RailSegment は .samples[] のほか、任意で .sStart, .sEnd, .reversed を持つ想定。
  *
- * 戻り値: { points: Point[], totalLength: number }
+ * 戻り値: { points: Point[], totalLength: number, segmentOffsets: SegmentOffset[] }
+ *
+ * segmentOffsets[i] は orderedSegments[i] に対応し、以下を持つ:
+ *   { index, id, reversed, sStart, sEnd, offsetS, length }
+ *     - offsetS: このセグメント(トリム・向き反映後)の内容が、結合後プロファイル上の
+ *                絶対sで何mから始まるか
+ *     - length:  このセグメントがトリムされた後の実際の長さ(sEnd - sStart。
+ *                sStart/sEnd省略時はセグメント全長)
+ *
+ * この配列は、系統+構内ルートのセグメント列結合(再設計仕様書5.1節)と、
+ * 番線の複数セグメント対応での「番線内累積距離 → {segmentId, localS}」変換
+ * (同仕様書1.1.1節)の両方から共通で使う、唯一の変換の元データとなる
+ * (localToAbsoluteS / absoluteSToLocal 参照)。
  */
 function buildRouteProfile(orderedSegments) {
   const points = [];
+  const segmentOffsets = [];
   let s = 0;
 
-  for (const segment of orderedSegments) {
+  for (let segIndex = 0; segIndex < orderedSegments.length; segIndex++) {
+    const segment = orderedSegments[segIndex];
     const rawSamples = segment.samples || [];
 
     // 1. 途中からの開始・終了を反映したサンプルを切り出す
     let samples = trimSamples(rawSamples, segment.sStart, segment.sEnd);
 
-
-    // 2. 逆送（reversed）の場合はサンプル列を反転する
+    // 2. 逆送(reversed)の場合はサンプル列を反転する
     if (segment.reversed) {
       samples.reverse();
     }
 
     const R = segment.straight ? null : (segment.curveRadiusApprox ?? null);
+    const offsetS = s; // このセグメントの最初の点を追加する直前の累積距離 = このセグメントの絶対オフセット
 
     for (let i = 0; i < samples.length; i++) {
       const sample = samples[i];
@@ -138,8 +152,64 @@ function buildRouteProfile(orderedSegments) {
         thetaRad: ((pitch * directionMultiplier) * Math.PI) / 180,
       });
     }
+
+    segmentOffsets.push({
+      index: segIndex,
+      id: segment.id,
+      reversed: !!segment.reversed,
+      sStart: segment.sStart ?? 0,
+      sEnd: segment.sEnd ?? (segment.length ?? (s - offsetS)),
+      offsetS,
+      length: s - offsetS,
+    });
   }
-  return { points, totalLength: points.length > 0 ? points[points.length - 1].s : 0 };
+  return { points, totalLength: points.length > 0 ? points[points.length - 1].s : 0, segmentOffsets };
+}
+
+/**
+ * 「そのセグメント自身の座標系(reversedを考慮する前、始点からの距離)」でのlocalSを、
+ * buildRouteProfileが返したsegmentOffsetsを使って、結合後プロファイル上の絶対sに変換する。
+ *
+ * @param segmentOffsets buildRouteProfileの戻り値のsegmentOffsets
+ * @param segmentIndex   orderedSegments配列内でのインデックス(同じsegmentIdが複数回
+ *                        経路に登場しうるため、idではなく位置インデックスで指定する)
+ * @param localS         そのセグメント自身の座標系でのs(sStart〜sEndの範囲を想定)
+ */
+function localToAbsoluteS(segmentOffsets, segmentIndex, localS) {
+  const entry = segmentOffsets[segmentIndex];
+  if (!entry) {
+    throw new Error(`localToAbsoluteS: segmentOffsets[${segmentIndex}]が存在しません`);
+  }
+  const trimmedLocalS = localS - entry.sStart;
+  const withinSegDistance = entry.reversed ? (entry.length - trimmedLocalS) : trimmedLocalS;
+  return entry.offsetS + withinSegDistance;
+}
+
+/**
+ * localToAbsoluteSの逆変換。結合後プロファイル上の絶対sから、
+ * それがどのセグメント(segmentOffsets中のどのエントリ)の、そのセグメント自身の
+ * 座標系でのどの位置(localS)に当たるかを求める。
+ * 該当するセグメントが無ければnullを返す(経路の範囲外)。
+ *
+ * 【境界上の点の扱い】あるセグメントの終端は次のセグメントの始端と絶対s上で
+ * 一致する(同じ物理的な位置)。この「ちょうど境界の値」はどちらのセグメントに
+ * 属するとしても物理的には同じ点なので、本関数はsegmentOffsetsの先頭から順に
+ * 探索し、最初に一致した(=より手前の)セグメントを返す仕様とする。
+ */
+function absoluteSToLocal(segmentOffsets, absoluteS) {
+  for (const entry of segmentOffsets) {
+    if (absoluteS >= entry.offsetS - EPS && absoluteS <= entry.offsetS + entry.length + EPS) {
+      const withinSegDistance = absoluteS - entry.offsetS;
+      const trimmedLocalS = entry.reversed ? (entry.length - withinSegDistance) : withinSegDistance;
+      return {
+        index: entry.index,
+        id: entry.id,
+        reversed: entry.reversed,
+        localS: trimmedLocalS + entry.sStart,
+      };
+    }
+  }
+  return null;
 }
 
 /**
@@ -209,4 +279,6 @@ module.exports = {
   buildRouteProfile,
   sampleAt,
   insertStations,
+  localToAbsoluteS,
+  absoluteSToLocal,
 };

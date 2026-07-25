@@ -4,10 +4,13 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { buildRouteProfile } = require('../client/calc/routeProfile');
 const { resolveOrderedSegments } = require('../client/calc/orderedRouteResolver');
+const { orderSegmentChain, deriveBoundaryPoints } = require('../client/calc/railGraph');
 const { computeSpeedLimitProfile } = require('../client/calc/speedLimitProfile');
 const { computeAccelProfile, DEFAULT_G } = require('../client/calc/accelProfile');
 const { generateTimetable, tickToClock, clockToTick, TICKS_PER_SECOND } = require('../client/calc/timetableGenerator');
 const { STOP_ICON_IDS, DEFAULT_STOP_ICON_ID } = require('../client/calc/stopIconShapes');
+// stop.sの範囲検証時の許容誤差(浮動小数点の丸め誤差吸収用)
+const EPS_STOP_S = 1e-6;
 const { buildPath } = require('../client/calc/routeBuilder');
 const { formationLength } = require('../client/calc/formation');
 const { resolveStopVariant } = require('../client/calc/stopVariantResolver');
@@ -270,7 +273,7 @@ app.post('/api/simple-schedule', (req, res) => {
     console.error(`[simple-schedule] 非有限な値(NaN/Infinity)が計算結果に含まれています: ${badPath}`);
     res.status(500).json({
       error: `時刻表計算の結果に不正な値(NaN/Infinity)が含まれています: ${badPath}。` +
-        '経路上のレール(極端なカント値等)を確認してください。',
+          '経路上のレール(極端なカント値等)を確認してください。',
     });
     return;
   }
@@ -538,8 +541,11 @@ function stationFilePath() {
 
 /** Track1件のバリデーション。不正ならエラーメッセージ文字列を返す(問題無ければnull) */
 function validateTrack(track, trackIndex) {
-  if (typeof track.segmentId !== 'string' || !track.segmentId) {
-    return `tracks[${trackIndex}].segmentIdは必須です`;
+  if (!Array.isArray(track.segmentIds) || track.segmentIds.length === 0) {
+    return `tracks[${trackIndex}].segmentIdsは1件以上の配列である必要があります`;
+  }
+  if (!track.segmentIds.every((id) => typeof id === 'string' && id)) {
+    return `tracks[${trackIndex}].segmentIdsの要素はすべて文字列である必要があります`;
   }
   if (!Array.isArray(track.stops)) {
     return `tracks[${trackIndex}].stopsは配列である必要があります`;
@@ -588,8 +594,8 @@ function findRoutesReferencing(routes, stationId, trackId = null) {
   const result = [];
   for (const route of routes) {
     const matchedWaypointIds = (route.waypoints ?? [])
-      .filter((wp) => wp.stationId === stationId && (trackId === null || wp.trackId === trackId))
-      .map((wp) => wp.id);
+        .filter((wp) => wp.stationId === stationId && (trackId === null || wp.trackId === trackId))
+        .map((wp) => wp.id);
     if (matchedWaypointIds.length > 0) {
       result.push({ routeId: route.id, routeName: route.name, waypointIds: matchedWaypointIds });
     }
@@ -619,9 +625,14 @@ function downgradeReferencingWaypoints(routes, stationId, trackId = null) {
  * 戻り値: { station, removedTrackIds } | { error }
  * removedTrackIds: 更新前には存在したが、今回のbodyに含まれなくなったtrack.id
  *   (Routeからの参照整合性処理に使う。新規作成時は常に空配列)
+ *
+ * @param allSegments rails-geometry.json相当の全RailSegment。track.segmentIds(順不同の集合、
+ *   クライアントの地図上での複数選択結果)から、実際に辿れる順序+reversedフラグ
+ *   (track.segments)を導出するのに使う(再設計仕様書1.1.1節)。
+ *   Routeのwaypoints→pathと同じ「真実源(segmentIds)をサーバー側で毎回再計算する」パターン。
  */
-function buildStationFromBody(body, existing) {
-  const { name, tags, tracks, color } = body;
+function buildStationFromBody(body, existing, allSegments) {
+  const { name, tags, tracks, color, railSegmentIds, boundaryOverrides } = body;
 
   if (typeof name !== 'string' || !name.trim()) {
     return { error: 'nameは必須です' };
@@ -632,36 +643,103 @@ function buildStationFromBody(body, existing) {
   if (color !== undefined && typeof color !== 'string') {
     return { error: 'colorは文字列である必要があります' };
   }
+  if (railSegmentIds !== undefined) {
+    if (!Array.isArray(railSegmentIds) || !railSegmentIds.every((id) => typeof id === 'string' && id)) {
+      return { error: 'railSegmentIdsは文字列の配列である必要があります' };
+    }
+  }
+  const validBoundaryTypes = new Set(['in', 'out', 'both']);
+  if (boundaryOverrides !== undefined) {
+    if (typeof boundaryOverrides !== 'object' || boundaryOverrides === null || Array.isArray(boundaryOverrides)) {
+      return { error: 'boundaryOverridesはオブジェクトである必要があります' };
+    }
+    for (const [key, value] of Object.entries(boundaryOverrides)) {
 
-  const normalizedTracks = (tracks ?? []).map((track, trackIndex) => {
+      if (!validBoundaryTypes.has(value)) {
+        return { error: `boundaryOverrides["${key}"]は in/out/both のいずれかである必要があります` };
+      }
+    }
+  }
+
+  const normalizedTracks = [];
+  for (let trackIndex = 0; trackIndex < (tracks ?? []).length; trackIndex++) {
+    const track = tracks[trackIndex];
     const err = validateTrack(track, trackIndex);
-    if (err) throw new Error(err);
+    if (err) return { error: err };
+
+    const orderResult = orderSegmentChain(allSegments, track.segmentIds);
+    if (orderResult.error) {
+      return { error: `tracks[${trackIndex}]: ${orderResult.error}` };
+    }
+    const orderedSegments = orderResult.ordered;
+
+    // 番線の総延長(stop.sの範囲検証に使う)。各セグメントの物理長(RailSegment.length)を単純合算する
+    // (buildRouteProfileのようなサンプル単位の正確な距離ではないが、範囲チェック用途には十分)
+    const totalLength = orderedSegments.reduce((sum, os) => {
+      const seg = allSegments.find((s) => s.id === os.segmentId);
+      return sum + (seg?.length ?? 0);
+    }, 0);
 
     const existingTrack = existing?.tracks?.find((t) => t.id === track.id);
-    return {
+
+    const normalizedStops = [];
+    for (let i = 0; i < track.stops.length; i++) {
+      const stop = track.stops[i];
+      if (stop.s < -EPS_STOP_S || stop.s > totalLength + EPS_STOP_S) {
+        return {
+          error: `tracks[${trackIndex}].stops[${i}].s(${stop.s})が番線の総延長(${totalLength.toFixed(2)})の範囲外です`,
+        };
+      }
+      const existingStop = existingTrack?.stops?.find((s) => s.id === stop.id);
+      normalizedStops.push({
+        id: stop.id && existingStop ? stop.id : generateId('stop'),
+        trainResourceName: stop.trainResourceName,
+        carCount: stop.carCount,
+        s: stop.s,
+        color: stop.color ?? existingStop?.color ?? null,
+        icon: stop.icon ?? existingStop?.icon ?? DEFAULT_STOP_ICON_ID,
+      });
+    }
+
+    normalizedTracks.push({
       id: track.id && existingTrack ? track.id : generateId('track'),
       name: typeof track.name === 'string' ? track.name : '',
-      segmentId: track.segmentId,
-      reversed: !!track.reversed,
+      segmentIds: track.segmentIds,
+      segments: orderedSegments,
       color: track.color ?? existingTrack?.color ?? null,
-      stops: track.stops.map((stop) => {
-        const existingStop = existingTrack?.stops?.find((s) => s.id === stop.id);
-        return {
-          id: stop.id && existingStop ? stop.id : generateId('stop'),
-          trainResourceName: stop.trainResourceName,
-          carCount: stop.carCount,
-          s: stop.s,
-          color: stop.color ?? existingStop?.color ?? null,
-          icon: stop.icon ?? existingStop?.icon ?? DEFAULT_STOP_ICON_ID,
-        };
-      }),
-    };
-  });
+      stops: normalizedStops,
+    });
+  }
 
   const keptTrackIds = new Set(normalizedTracks.map((t) => t.id));
   const removedTrackIds = (existing?.tracks ?? [])
-    .map((t) => t.id)
-    .filter((id) => !keptTrackIds.has(id));
+      .map((t) => t.id)
+      .filter((id) => !keptTrackIds.has(id));
+
+  const finalRailSegmentIds = railSegmentIds ?? existing?.railSegmentIds ?? [];
+  const finalBoundaryOverrides = boundaryOverrides ?? existing?.boundaryOverrides ?? {};
+
+  // 境界点はrailSegmentIdsから毎回導出する(Route.pathやTrack.segmentsと同じ、
+  // 「真実源をサーバー側で毎回再計算し、キャッシュとして永続化する」パターン)。
+  // タイプ(in/out/both)はboundaryOverridesに明示指定が無ければデフォルト"both"とする。
+  const derivedBoundaries = deriveBoundaryPoints(allSegments, finalRailSegmentIds);
+  // finalBoundaryOverridesのうち、現在実在するnodeKeyに対応しないもの(構内範囲を
+  // 変更した結果、消滅した境界点への古い上書き設定)は保存時に自動で刈り取る。
+  // これはRoute.pathやTrack.segmentsと同じ「真実源から毎回再計算する」パターンの延長で、
+  // 6節#4(駅データ変更時の整合性)のうち境界点タイプに関する部分をここで解決する。
+  const validNodeKeys = new Set(derivedBoundaries.map((b) => b.nodeKey));
+  const prunedBoundaryOverrides = {};
+  for (const [key, value] of Object.entries(finalBoundaryOverrides)) {
+    if (validNodeKeys.has(key)) prunedBoundaryOverrides[key] = value;
+    }
+  const boundaryPoints = derivedBoundaries.map((b) => ({
+    nodeKey: b.nodeKey,
+    x: b.x,
+    y: b.y,
+    z: b.z,
+    segmentEnds: b.segmentEnds,
+    type: prunedBoundaryOverrides[b.nodeKey] ?? 'both',
+  }));
 
   return {
     station: {
@@ -670,6 +748,9 @@ function buildStationFromBody(body, existing) {
       tags: normalizeTags(tags),
       color: color ?? existing?.color ?? null,
       tracks: normalizedTracks,
+      railSegmentIds: finalRailSegmentIds,
+      boundaryOverrides: prunedBoundaryOverrides,
+      boundaryPoints,
     },
     removedTrackIds,
   };
@@ -684,9 +765,18 @@ app.post('/api/stations', (req, res) => {
   const stations = readJsonArray(stationFilePath());
   const existing = req.body.id ? stations.find((s) => s.id === req.body.id) : null;
 
+  const allSegments = loadMergedRails();
+  if (!allSegments) {
+    res.status(404).json({
+      error: 'rails-geometry.jsonが見つかりません',
+      path: path.join(DATA_DIR, 'rails-geometry.json'),
+    });
+    return;
+  }
+
   let result;
   try {
-    result = buildStationFromBody(req.body, existing);
+    result = buildStationFromBody(req.body, existing, allSegments);
   } catch (e) {
     res.status(400).json({ error: e.message });
     return;
@@ -744,7 +834,7 @@ app.delete('/api/stations/:id', (req, res) => {
   if (referencingRoutes.length > 0 && !force) {
     res.status(409).json({
       error: 'この駅は他の路線から参照されているため削除できません。' +
-        '?force=true を付けて再度削除すると、参照している経由点を通常の経由点(駅なし)に格下げしてから削除します。',
+          '?force=true を付けて再度削除すると、参照している経由点を通常の経由点(駅なし)に格下げしてから削除します。',
       referencingRoutes,
     });
     return;

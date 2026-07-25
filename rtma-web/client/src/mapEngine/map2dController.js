@@ -33,6 +33,7 @@
  */
 import arrowIconUrl from '../assets/arrow-icon.svg';
 import { STOP_ICON_SHAPES } from '../iconShapes';
+import { pointAtTrackDistance, trackPolyline } from '../trackGeometry';
 
 const STOP_ICON_SYMBOL_BY_ID = Object.fromEntries(STOP_ICON_SHAPES.map((s) => [s.id, s.symbol]));
 
@@ -179,16 +180,6 @@ export function createMap2DController(container, options = {}) {
     }
 
     return result;
-  }
-
-  /**
-   * segの座標系での距離sにある1点のワールド座標を返す(pointsInRangeのsStart=sEnd特殊ケース)。
-   * 停車位置(StopVariant.s)を実際の地図上の点に変換するのに使う。
-   * sがセグメント長を超える/負など不正な場合はnullを返す。
-   */
-  function pointAtDistance(seg, s) {
-    const points = pointsInRange(seg, s, s);
-    return points.length > 0 ? points[0] : null;
   }
 
   function fitView() {
@@ -415,7 +406,7 @@ export function createMap2DController(container, options = {}) {
     const d3 = cross(ax, az, bx, bz, cx, cz);
     const d4 = cross(ax, az, bx, bz, dx, dz);
     return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
-           ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+        ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
   }
 
   /**
@@ -426,10 +417,10 @@ export function createMap2DController(container, options = {}) {
   function segmentIntersectsRect(ax, az, bx, bz, rx0, rz0, rx1, rz1) {
     if (pointInRect(ax, az, rx0, rz0, rx1, rz1) || pointInRect(bx, bz, rx0, rz0, rx1, rz1)) return true;
     return (
-      segmentsIntersect(ax, az, bx, bz, rx0, rz0, rx1, rz0) ||
-      segmentsIntersect(ax, az, bx, bz, rx1, rz0, rx1, rz1) ||
-      segmentsIntersect(ax, az, bx, bz, rx1, rz1, rx0, rz1) ||
-      segmentsIntersect(ax, az, bx, bz, rx0, rz1, rx0, rz0)
+        segmentsIntersect(ax, az, bx, bz, rx0, rz0, rx1, rz0) ||
+        segmentsIntersect(ax, az, bx, bz, rx1, rz0, rx1, rz1) ||
+        segmentsIntersect(ax, az, bx, bz, rx1, rz1, rx0, rz1) ||
+        segmentsIntersect(ax, az, bx, bz, rx0, rz1, rx0, rz0)
     );
   }
 
@@ -569,7 +560,7 @@ export function createMap2DController(container, options = {}) {
     // 後段で上書き描画するので、ベースの見た目は「経路外」のまま扱う。
     const inRoute = !!routeEntry && !isPartialRoute;
     let color = colorFor(seg);
-    
+
     // 経路内のセグメントはハイライト色で表示
     if (inRoute) {
       color = colors.route;
@@ -654,46 +645,46 @@ export function createMap2DController(container, options = {}) {
     ctx.globalAlpha = 0.85;
 
     for (const path of paths) {
-    for (const routeEntry of path) {
-      const seg = state.segments.find(s => s.id === routeEntry.id);
-      if (!seg) continue;
+      for (const routeEntry of path) {
+        const seg = state.segments.find(s => s.id === routeEntry.id);
+        if (!seg) continue;
 
-      // 始点/終点がレール途中にある場合は、実際に通る区間だけに絞る
-      const hasTrim = routeEntry.sStart != null && routeEntry.sEnd != null;
-      const points = hasTrim ? pointsInRange(seg, routeEntry.sStart, routeEntry.sEnd) : pointsOf(seg);
-      if (points.length < 2) continue;
+        // 始点/終点がレール途中にある場合は、実際に通る区間だけに絞る
+        const hasTrim = routeEntry.sStart != null && routeEntry.sEnd != null;
+        const points = hasTrim ? pointsInRange(seg, routeEntry.sStart, routeEntry.sEnd) : pointsOf(seg);
+        if (points.length < 2) continue;
 
-      // セグメントの方向を判定
-      let isReversed = routeEntry.reversed;
+        // セグメントの方向を判定
+        let isReversed = routeEntry.reversed;
 
-      // ポイントの方向を決定
-      const orderedPoints = isReversed ? [...points].reverse() : points;
+        // ポイントの方向を決定
+        const orderedPoints = isReversed ? [...points].reverse() : points;
 
-      // セグメント内の各線分に沿って矢印を配置
-      for (let i = 0; i < orderedPoints.length - 1; i++) {
-        const p1 = orderedPoints[i];
-        const p2 = orderedPoints[i + 1];
+        // セグメント内の各線分に沿って矢印を配置
+        for (let i = 0; i < orderedPoints.length - 1; i++) {
+          const p1 = orderedPoints[i];
+          const p2 = orderedPoints[i + 1];
 
-        const [sx1, sz1] = toScreen(p1.x, p1.z);
-        const [sx2, sz2] = toScreen(p2.x, p2.z);
+          const [sx1, sz1] = toScreen(p1.x, p1.z);
+          const [sx2, sz2] = toScreen(p2.x, p2.z);
 
-        // 線分の長さと方向
-        const dx = sx2 - sx1;
-        const dz = sz2 - sz1;
-        const lineLen = Math.hypot(dx, dz);
-        const angle = Math.atan2(dz, dx);
+          // 線分の長さと方向
+          const dx = sx2 - sx1;
+          const dz = sz2 - sz1;
+          const lineLen = Math.hypot(dx, dz);
+          const angle = Math.atan2(dz, dx);
 
-        // 線分に沿って矢印を配置
-        const arrowCount = Math.max(1, Math.floor(lineLen / ARROW_SPACING));
-        for (let j = 0; j <= arrowCount; j++) {
-          const t = arrowCount > 0 ? j / arrowCount : 0.5;
-          const arrowX = sx1 + dx * t;
-          const arrowY = sz1 + dz * t;
+          // 線分に沿って矢印を配置
+          const arrowCount = Math.max(1, Math.floor(lineLen / ARROW_SPACING));
+          for (let j = 0; j <= arrowCount; j++) {
+            const t = arrowCount > 0 ? j / arrowCount : 0.5;
+            const arrowX = sx1 + dx * t;
+            const arrowY = sz1 + dz * t;
 
-          drawArrowIcon(arrowX, arrowY, angle, ARROW_SIZE);
+            drawArrowIcon(arrowX, arrowY, angle, ARROW_SIZE);
+          }
         }
       }
-    }
     }
 
     ctx.restore();
@@ -813,10 +804,8 @@ export function createMap2DController(container, options = {}) {
       let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
 
       for (const track of station.tracks ?? []) {
-        const seg = state.segments.find((s) => s.id === track.segmentId);
-        if (!seg) continue;
         for (const stop of track.stops ?? []) {
-          const point = pointAtDistance(seg, stop.s);
+          const point = pointAtTrackDistance(state.segments, track.segments, stop.s);
           if (!point) continue;
           minX = Math.min(minX, point.x);
           maxX = Math.max(maxX, point.x);
@@ -853,7 +842,8 @@ export function createMap2DController(container, options = {}) {
   }
 
   /**
-   * 各番線に、レールに沿って上下2本の枠線(境界線)を描き、番線名を近くに表示する。
+   * 各番線に、レール(複数セグメントにまたがる場合は連結した全区間)に沿って
+   * 上下2本の枠線(境界線)を描き、番線名を近くに表示する。
    * オフセットは画面ピクセル単位で固定し(ワールド座標単位だとズーム倍率によって
    * 見た目の太さが変わってしまうため)、隣接点との方向から法線ベクトルを計算する。
    */
@@ -862,9 +852,7 @@ export function createMap2DController(container, options = {}) {
 
     for (const station of state.stations) {
       for (const track of station.tracks ?? []) {
-        const seg = state.segments.find((s) => s.id === track.segmentId);
-        if (!seg) continue;
-        const points = pointsOf(seg);
+        const points = trackPolyline(state.segments, track.segments);
         if (points.length < 2) continue;
         const color = track.color || colors.route;
 
@@ -893,7 +881,7 @@ export function createMap2DController(container, options = {}) {
         }
         ctx.restore();
 
-        // 番線名のラベルは、線の中間点付近に表示する
+        // 番線名のラベルは、連結した線全体の中間点付近に表示する
         const mid = points[Math.floor(points.length / 2)];
         const [msx, msy] = toScreen(mid.x, mid.z);
         ctx.save();
@@ -911,10 +899,8 @@ export function createMap2DController(container, options = {}) {
   function drawStopIcons() {
     for (const station of state.stations) {
       for (const track of station.tracks ?? []) {
-        const seg = state.segments.find((s) => s.id === track.segmentId);
-        if (!seg) continue;
         for (const stop of track.stops ?? []) {
-          const point = pointAtDistance(seg, stop.s);
+          const point = pointAtTrackDistance(state.segments, track.segments, stop.s);
           if (!point) continue;
           const [sx, sy] = toScreen(point.x, point.z);
           const symbol = STOP_ICON_SYMBOL_BY_ID[stop.icon] || STOP_ICON_SYMBOL_BY_ID['circle-filled'];
@@ -968,10 +954,10 @@ export function createMap2DController(container, options = {}) {
       if (isSelected(seg)) selectedSegs.push(seg);
       else drawSegment(seg);
     }
-    
+
     // 経路の矢印を描画
     drawDirectionalArrowsAlongPath();
-    
+
     for (const seg of selectedSegs) drawSegment(seg);
 
     // 番線の枠線・停車位置アイコンは、レール本体より前面に描く

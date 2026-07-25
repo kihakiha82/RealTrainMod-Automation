@@ -47,7 +47,6 @@ export default function App() {
   // 駅管理パネル(5章/4c)。右クリック「駅編集」カテゴリで拾ったrailPointを
   // StationEditPanelへpropsとして橋渡しするためのstate。
   const [showStationEditPanel, setShowStationEditPanel] = useState(false);
-  const [pendingTrackPoint, setPendingTrackPoint] = useState(null);
   const [pendingStopPoint,  setPendingStopPoint]  = useState(null);
 
   // 地図上に駅の長方形・番線の枠線・停車位置アイコンを描画するための駅一覧。
@@ -129,11 +128,6 @@ export default function App() {
       setRouteEditSaveError(null);
       return;
     }
-    if (itemId === 'station-edit:add-track') {
-      if (!railPoint) return;
-      setPendingTrackPoint(railPoint);
-      return;
-    }
     if (itemId === 'station-edit:set-stop-position') {
       if (!railPoint) return;
       setPendingStopPoint(railPoint);
@@ -185,7 +179,7 @@ export default function App() {
     const candidates = path.filter((entry) => entry.id === railPoint.segId);
     if (candidates.length === 0) return null;
     const withinTrim = candidates.find((entry) =>
-      entry.sStart == null || (railPoint.s >= entry.sStart && railPoint.s <= entry.sEnd)
+        entry.sStart == null || (railPoint.s >= entry.sStart && railPoint.s <= entry.sEnd)
     );
     return (withinTrim ?? candidates[0])._legIndex;
   }
@@ -862,9 +856,9 @@ export default function App() {
           )}
           {showStationEditPanel && (
               <StationEditPanel
+                  segments={segments}
+                  selectedIds={selectedIds}
                   trainSpecs={trainSpecs}
-                  pendingTrackPoint={pendingTrackPoint}
-                  onConsumeTrackPoint={() => setPendingTrackPoint(null)}
                   pendingStopPoint={pendingStopPoint}
                   onConsumeStopPoint={() => setPendingStopPoint(null)}
                   onClose={() => setShowStationEditPanel(false)}

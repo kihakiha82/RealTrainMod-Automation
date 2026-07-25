@@ -36,7 +36,6 @@ export const RAIL_CONTEXT_MENU_SCHEMA = [
     id: 'station-edit',
     label: '駅編集',
     children: [
-      { id: 'station-edit:add-track', label: 'ここに番線を追加' },
       { id: 'station-edit:set-stop-position', label: 'ここを停車位置に設定' },
     ],
   },
