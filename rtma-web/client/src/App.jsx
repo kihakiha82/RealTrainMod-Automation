@@ -1,4 +1,4 @@
-import {useEffect, useRef, useState} from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Map2D from './components/Map2D';
 import TimeEditor from './components/TimeEditor';
 import RouteEditPanel from './components/RouteEditPanel';
@@ -113,19 +113,10 @@ export default function App() {
     }
     if (itemId === 'route-edit:add-waypoint') {
       if (!railPoint) return;
-      // クリック位置が既存の経路(routeEditPath)の途中に乗っていれば、その位置に挿入する。
-      // 乗っていなければ(routeEditPathがまだ無い/どのレッグにも該当しない)末尾に追加する。
-      const legIndex = findInsertionLegIndex(routeEditPath, railPoint);
-      const next = [...routeEditWaypoints];
-      if (legIndex == null) {
-        next.push(railPoint);
-      } else {
-        next.splice(legIndex + 1, 0, railPoint);
-      }
-      setRouteEditWaypoints(next);
-      recomputeRouteEditPath(next);
-      setRouteEditSaveStatus(null);
-      setRouteEditSaveError(null);
+      // クリック位置が、いずれかの駅の境界点と座標的に一致するかを自動判定する
+      // (4番: 系統のwaypointはtrackIdを持たず、境界点への一致だけで駅と紐付く)。
+      const matchedStationId = findMatchingBoundaryStationId(railPoint);
+      addRouteEditWaypoint(railPoint, matchedStationId);
       return;
     }
     if (itemId === 'station-edit:set-stop-position') {
@@ -134,6 +125,41 @@ export default function App() {
       return;
     }
     console.log('[ContextMenu] action:', itemId, 'targets:', targetIds);
+  }
+
+  /**
+   * 路線編集の経由点リストに1点を追加(または既存プレビュー経路の途中に挿入)する共通処理。
+   * 右クリック「経由点として追加」(座標一致でstationIdを判定する必要がある)と、
+   * 駅の境界点マーカーのクリック(handleBoundaryMarkerClick。stationIdは既に確定済み)の
+   * 両方から呼ばれる。
+   */
+  function addRouteEditWaypoint(railPoint, stationId) {
+    // クリック位置が既存の経路(routeEditPath)の途中に乗っていれば、その位置に挿入する。
+    // 乗っていなければ(routeEditPathがまだ無い/どのレッグにも該当しない)末尾に追加する。
+    const legIndex = findInsertionLegIndex(routeEditPath, railPoint);
+    const newWaypoint = { segId: railPoint.segId, s: railPoint.s, x: railPoint.x, z: railPoint.z, stationId: stationId ?? null };
+    const next = [...routeEditWaypoints];
+    if (legIndex == null) {
+      next.push(newWaypoint);
+    } else {
+      next.splice(legIndex + 1, 0, newWaypoint);
+    }
+    setRouteEditWaypoints(next);
+    recomputeRouteEditPath(next);
+    setRouteEditSaveStatus(null);
+    setRouteEditSaveError(null);
+  }
+
+  /**
+   * 駅の境界点マーカー(map2dController.js#drawBoundaryMarkers)をクリックした時に呼ばれる
+   * (再設計仕様書3.1.2節)。マーカー由来のrailPointは、境界点の座標そのものから
+   * segId/s/stationIdが既に確定した状態で渡ってくるので、右クリック「経由点として追加」と
+   * 同じ挿入ロジック(addRouteEditWaypoint)にそのまま渡せる
+   * (findMatchingBoundaryStationIdによる座標一致判定は不要)。
+   */
+  function handleBoundaryMarkerClick(railPoint) {
+    if (!railPoint) return;
+    addRouteEditWaypoint(railPoint, railPoint.stationId ?? null);
   }
 
   /** 始点/終点マーカーをドラッグして位置が確定した時に呼ばれる */
@@ -145,6 +171,31 @@ export default function App() {
     setSchedule(null);
     setSaveStaffStatus(null);
   }
+
+  /**
+   * クリック位置(railPoint: {segId, s})が、mapStations(地図表示用に取得済みの駅一覧)の
+   * いずれかの境界点と座標的に一致するかを判定する。一致すればその駅のidを返す
+   * (4番: 系統のwaypointは境界点との一致だけで駅と自動的に紐づく。サーバー側の
+   * findMatchingBoundaryと同じロジック・同じ許容誤差)。
+   */
+  function findMatchingBoundaryStationId(railPoint) {
+    const EPS = 1e-3;
+    for (const station of mapStations) {
+      for (const boundary of station.boundaryPoints ?? []) {
+        for (const se of boundary.segmentEnds ?? []) {
+          if (se.segmentId !== railPoint.segId) continue;
+          const seg = segments.find((s) => s.id === railPoint.segId);
+          if (!seg) continue;
+          const expectedS = se.end === 'start' ? 0 : (seg.length ?? 0);
+          if (Math.abs(railPoint.s - expectedS) <= EPS) {
+            return station.id;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
 
   /**
    * 路線編集(4a/4b)のwaypoint列から、railGraph.findRailRouteをwaypoint間で順にチェインして
@@ -231,7 +282,6 @@ export default function App() {
         x: wp.x,
         z: wp.z,
         stationId: wp.stationId ?? null,
-        trackId: wp.trackId ?? null,
       }));
       await saveRoute({ name: name.trim(), tags, waypoints: waypointsPayload });
       setRouteEditSaveStatus('saved');
@@ -241,16 +291,13 @@ export default function App() {
     }
   }
 
-  /** 路線編集(4b): waypoints[index]に駅/番線を紐付ける(RouteEditPanel側で駅・番線の作成/選択が確定した後に呼ばれる) */
-  function handleAttachStation(index, { stationId, trackId }) {
-    setRouteEditWaypoints((prev) => prev.map((wp, i) => (i === index ? { ...wp, stationId, trackId } : wp)));
-    setRouteEditSaveStatus(null);
-    setRouteEditSaveError(null);
-  }
-
-  /** 路線編集(4b): waypoints[index]の駅紐付けを解除する(route.json側のみの変更。Station自体は消さない) */
+  /**
+   * 路線編集(4番再設計): waypoints[index]の駅紐付けを手動で解除する。
+   * 通常は境界点との座標一致で自動的に紐付く/外れるが、コード上の座標一致が
+   * 意図と異なる場合(隣接駅の境界点にたまたま近い等)の手動オーバーライドとして残す。
+   */
   function handleDetachStation(index) {
-    setRouteEditWaypoints((prev) => prev.map((wp, i) => (i === index ? { ...wp, stationId: null, trackId: null } : wp)));
+    setRouteEditWaypoints((prev) => prev.map((wp, i) => (i === index ? { ...wp, stationId: null } : wp)));
     setRouteEditSaveStatus(null);
     setRouteEditSaveError(null);
   }
@@ -826,6 +873,7 @@ export default function App() {
               onSelectionChange={setSelectedIds}
               onContextMenuAction={handleRailContextMenuAction}
               onRoutePointChange={handleRoutePointDrag}
+              onBoundaryPointClick={handleBoundaryMarkerClick}
               ref={mapRef}
           />
           {!isServerRunning && (
@@ -849,7 +897,6 @@ export default function App() {
                   onRemoveLast={handleRemoveLastWaypoint}
                   onClear={handleClearRouteEdit}
                   onSave={handleSaveRouteEdit}
-                  onAttach={handleAttachStation}
                   onDetach={handleDetachStation}
                   onStationsChanged={refreshMapStations}
               />

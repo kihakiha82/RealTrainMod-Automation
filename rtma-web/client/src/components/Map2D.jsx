@@ -24,10 +24,13 @@ import ContextMenu from './ContextMenu';
  *   コンポーネント内で開閉が完結する)ので省略可能。
  * onRoutePointChange: 始点/終点マーカーをドラッグして位置が確定した時に呼ばれる
  *   (('start'|'end', { segId, s, x, z }) => void)。
+ * onBoundaryPointClick: 駅の境界点マーカーをクリックした時に呼ばれる
+ *   (({ segId, s, x, z, stationId, boundaryType }) => void)。系統作成時の
+ *   waypoint追加(始点/終点/経由点)にそのまま使える形で渡ってくる。
  */
 const Map2D = forwardRef(function Map2D(
-  { segments, player, selectedIds, routePath, routeEditPath, routeWaypoints, stations, routeStart, routeEnd, onSelectionChange, onContextMenuAction, onRoutePointChange },
-  ref
+    { segments, player, selectedIds, routePath, routeEditPath, routeWaypoints, stations, routeStart, routeEnd, onSelectionChange, onContextMenuAction, onRoutePointChange, onBoundaryPointClick },
+    ref
 ) {
   const containerRef = useRef(null);
   const controllerRef = useRef(null);
@@ -39,6 +42,8 @@ const Map2D = forwardRef(function Map2D(
   onContextMenuActionRef.current = onContextMenuAction;
   const onRoutePointChangeRef = useRef(onRoutePointChange);
   onRoutePointChangeRef.current = onRoutePointChange;
+  const onBoundaryPointClickRef = useRef(onBoundaryPointClick);
+  onBoundaryPointClickRef.current = onBoundaryPointClick;
 
   // 右クリックメニューの開閉状態。{ x, y, targetIds, railPoint } | null
   const [contextMenu, setContextMenu] = useState(null);
@@ -49,6 +54,7 @@ const Map2D = forwardRef(function Map2D(
       onSelectionChange: (ids) => onSelectionChangeRef.current?.(ids),
       onContextMenu: (info) => setContextMenu(info),
       onRoutePointChange: (role, point) => onRoutePointChangeRef.current?.(role, point),
+      onBoundaryPointClick: (railPoint) => onBoundaryPointClickRef.current?.(railPoint),
     });
     return () => {
       controllerRef.current?.destroy();
@@ -102,17 +108,17 @@ const Map2D = forwardRef(function Map2D(
   }));
 
   return (
-    <div ref={containerRef} className="map-canvas-host">
-      {contextMenu && (
-        <ContextMenu
-          x={contextMenu.x}
-          y={contextMenu.y}
-          schema={RAIL_CONTEXT_MENU_SCHEMA}
-          onAction={(itemId) => onContextMenuActionRef.current?.(itemId, contextMenu.targetIds, contextMenu.railPoint)}
-          onClose={() => setContextMenu(null)}
-        />
-      )}
-    </div>
+      <div ref={containerRef} className="map-canvas-host">
+        {contextMenu && (
+            <ContextMenu
+                x={contextMenu.x}
+                y={contextMenu.y}
+                schema={RAIL_CONTEXT_MENU_SCHEMA}
+                onAction={(itemId) => onContextMenuActionRef.current?.(itemId, contextMenu.targetIds, contextMenu.railPoint)}
+                onClose={() => setContextMenu(null)}
+            />
+        )}
+      </div>
   );
 });
 

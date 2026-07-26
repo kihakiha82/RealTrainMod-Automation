@@ -27,6 +27,12 @@
  * ドラッグ確定時(mouseup)にonRoutePointChange('start'|'end', point)でReact側に通知する。
  * グリッドは1,2,4,8,16(1チャンク),32...ブロックの中からズームに応じて自動選択する。
  *
+ * 駅の境界点マーカー(drawBoundaryMarkers)をクリックすると、その境界点をレール上の点
+ * ({ segId, s, x, z, stationId, boundaryType })に変換してoptions.onBoundaryPointClickで
+ * React側に通知する(再設計仕様書3.1.2節: 系統作成時にマーカークリックでwaypointを
+ * 直接指定できるようにする)。stationId/boundaryTypeは既に確定しているため、
+ * React側での座標一致判定(findMatchingBoundaryStationId相当)は不要。
+ *
  * options.onSelectionChange: (Set<string>) => void
  *   ユーザー操作で選択セグメント集合(seg.idのSet)が変わった時に呼ばれる。
  *   React側(App.jsx)のstateへ橋渡しする想定。
@@ -38,7 +44,7 @@ import { pointAtTrackDistance, trackPolyline } from '../trackGeometry';
 const STOP_ICON_SYMBOL_BY_ID = Object.fromEntries(STOP_ICON_SHAPES.map((s) => [s.id, s.symbol]));
 
 export function createMap2DController(container, options = {}) {
-  const { onSelectionChange, onContextMenu, onRoutePointChange } = options;
+  const { onSelectionChange, onContextMenu, onRoutePointChange, onBoundaryPointClick } = options;
   const canvas = document.createElement('canvas');
   canvas.style.cursor = 'default';
   canvas.style.display = 'block';
@@ -54,6 +60,12 @@ export function createMap2DController(container, options = {}) {
     stations: [], // Station[](/api/stationsそのまま。駅の長方形・番線の枠線・停車位置アイコンの描画に使う)
     routeStart: null, // { segId, s, x, z } | null(レール途中の始点)
     routeEnd: null,   // { segId, s, x, z } | null(レール途中の終点)
+    routeBoundary: null,
+    markerX: 0,
+    markerZ: 0,
+    stationId: null,
+    markerSegId: null,
+    markerType: null,
     scale: 1,
     offsetX: 0,
     offsetZ: 0,
@@ -318,7 +330,7 @@ export function createMap2DController(container, options = {}) {
   /** 画面座標(screenX, screenZ)が始点/終点マーカーの上に乗っているか判定する */
   function pickRoutePointAt(screenX, screenZ) {
     const hitRadius = ROUTE_POINT_RADIUS + 3; // マーカー本体より少し広めに当たり判定を取る
-    const candidates = [['start', state.routeStart], ['end', state.routeEnd]];
+    const candidates = [['start', state.routeStart], ['end', state.routeEnd], ['boundary', state.routeBoundary]];
     for (const [role, point] of candidates) {
       if (!point) continue;
       const [sx, sz] = toScreen(point.x, point.z);
@@ -787,6 +799,144 @@ export function createMap2DController(container, options = {}) {
     });
   }
 
+  //菱形(出入口)
+  function drawDiamondMarker(point, label, fillColor) {
+    if (!point) return;
+    const [sx, sz] = toScreen(point.x, point.z);
+    const r = ROUTE_POINT_RADIUS;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(sx, sz - r); // 上
+    ctx.lineTo(sx + r, sz); // 右
+    ctx.lineTo(sx, sz + r); // 下
+    ctx.lineTo(sx - r, sz); // 左
+    ctx.closePath();
+
+    ctx.fillStyle = fillColor;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = colors.panel;
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.font = 'bold 11px "JetBrains Mono", "SFMono-Regular", Consolas, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillStyle = colors.text;
+    ctx.fillText(label, sx, sz - r - 4);
+  }
+
+  //三角形(片側通行のとき)(回転角を指定する)
+  function drawTriangleMarker(point, label, fillColor, angleRad) {
+    if (!point) return;
+    const [sx, sz] = toScreen(point.x, point.z);
+    const r = ROUTE_POINT_RADIUS;
+    const h = r * (Math.sqrt(3) / 2); // 高さの半分
+
+    ctx.save();
+    // 1. マーカーの中心へ原点を移動して回転
+    ctx.translate(sx, sz);
+    ctx.rotate(angleRad);
+
+    // 2. 原点 (0, 0) を基準に右向きの三角形を描画
+    ctx.beginPath();
+    ctx.moveTo(r, 0);          // 右（先端）
+    ctx.lineTo(-r / 2, -h);    // 左上
+    ctx.lineTo(-r / 2, h);     // 左下
+    ctx.closePath();
+
+    ctx.fillStyle = fillColor;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = colors.panel;
+    ctx.stroke();
+
+    // 3. 座標系を元に戻す（テキストの傾きを防ぐ）
+    ctx.restore();
+
+    // 4. ラベル描画（回転の影響を受けない）
+    ctx.font = 'bold 11px "JetBrains Mono", "SFMono-Regular", Consolas, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillStyle = colors.text;
+    ctx.fillText(label, sx, sz - r - 4);
+  }
+
+  function drawBoundaryMarkers() {
+    for (const station of state.stations) {
+      for (const boundaryPoint of station.boundaryPoints ?? []) {
+
+        // boundaryPoint に関連するセグメント端点情報から角度を算出
+        for (const segEnd of boundaryPoint.segmentEnds ?? []) {
+          // segEnd から対象のセグメントを取得 (構造に合わせて調整してください)
+          const seg = state.segments.find(s => s.id === segEnd.segmentId || s.id === segEnd.id);
+          if (!seg) continue;
+
+          const points = pointsOf(seg);
+          if (points.length < 2) continue;
+
+          // 端点がセグメントの始点(points[0])側か終点(points[last])側かを判定して「隣の点」を取得
+          const isStart = Math.hypot(points[0].x - boundaryPoint.x, points[0].z - boundaryPoint.z) < 1e-3;
+          const nextPoint = isStart ? points[1] : points[points.length - 2];
+
+          // 端点から隣の点へ向かうベクトルの角度(ラジアン)を計算
+          const dx = nextPoint.x - boundaryPoint.x;
+          const dz = nextPoint.z - boundaryPoint.z;
+          const angle = Math.atan2(dz, dx);
+
+          if (boundaryPoint.type === "both") {
+            drawDiamondMarker(boundaryPoint, station.name + "出入", colors.waypoint)
+          } else if (boundaryPoint.type === "in") {
+            drawTriangleMarker(boundaryPoint, station.name + "入", colors.waypoint, angle);
+          } else if (boundaryPoint.type === "out") {
+            drawTriangleMarker(boundaryPoint, station.name + "出", colors.waypoint, angle + Math.PI);
+          }
+
+        }
+      }
+    }
+  }
+  /**
+   * 境界点マーカーのクリック位置を、route-edit:add-waypointと同じ形の
+   * railPoint({ segId, s, x, z, stationId, boundaryType })に変換する。
+   * 境界点は定義上必ずセグメントの端点(s=0またはs=length)に一致するので、
+   * 代表するsegmentEnds[0]をそのまま使えばよい
+   * (サーバー側server.js#boundaryToRoutePointと同じ考え方)。
+   */
+  function boundaryPointToRailPoint(boundaryPoint, station) {
+    const rep = boundaryPoint.segmentEnds?.[0];
+    if (!rep) return null;
+    const segmentId = rep.segmentId ?? rep.segId ?? rep.id;
+    const seg = state.segments.find((s) => s.id === segmentId);
+    if (!seg) return null;
+    const s = rep.end === 'start' ? 0 : (seg.length ?? 0);
+    return {
+      segId: segmentId,
+      s,
+      x: boundaryPoint.x,
+      z: boundaryPoint.z,
+      stationId: station.id ?? station.stationId ?? null,
+      boundaryType: boundaryPoint.type ?? 'both',
+    };
+  }
+
+  //座標取得
+  function pickBoundaryPointAt(screenX, screenZ) {
+    const hitRadius = ROUTE_POINT_RADIUS + 3;
+    for (const station of state.stations) {
+      for (const bp of station.boundaryPoints ?? []) {
+        const [sx, sz] = toScreen(bp.x, bp.z);
+        if (Math.hypot(screenX - sx, screenZ - sz) <= hitRadius) {
+          return { station, boundaryPoint: bp };
+        }
+      }
+    }
+    return null;
+  }
+
+
+
   /**
    * 駅の範囲を示す半透明の長方形を描画する。
    * バウンディングボックスは「その駅の全番線にある停車位置(StopVariant)の
@@ -967,6 +1117,7 @@ export function createMap2DController(container, options = {}) {
     drawPlayer();
     drawRoutePointMarkers();
     drawRouteWaypointMarkers();
+    drawBoundaryMarkers();
     drawSelectionRect();
     drawRulers();
   }
@@ -994,12 +1145,36 @@ export function createMap2DController(container, options = {}) {
       const role = pickRoutePointAt(mx, my);
       if (role) {
         // 始点/終点マーカーのドラッグ開始(通常の選択操作は行わない)
-        const point = role === 'start' ? state.routeStart : state.routeEnd;
-        state.draggingRole = role;
-        state.draggingSegId = point.segId;
-        canvas.style.cursor = 'grabbing';
+        let point
+        let draggableMarker = false
+        if (role === 'start') {
+          point = state.routeStart
+          draggableMarker = true
+        } else if (role === 'end') {
+          point = state.routeEnd
+          draggableMarker = true
+        } else if (role === 'boundary') {
+          point = state.routeBoundary
+        }
+        if (draggableMarker == true) {
+          state.draggingRole = role;
+          state.draggingSegId = point.segId;
+          canvas.style.cursor = 'grabbing';
+        } else {
+        }
         return;
       }
+
+      const bpHit = pickBoundaryPointAt(mx, my);
+      if (bpHit) {
+        const { station, boundaryPoint } = bpHit;
+        const railPoint = boundaryPointToRailPoint(boundaryPoint, station);
+        if (railPoint) {
+          onBoundaryPointClick?.(railPoint);
+        }
+        return; // マーカークリック時は矩形選択やレール選択へ進まない
+      }
+
       // 左クリック = 選択操作の開始(実際に選択/矩形選択どちらになるかはmousemoveの移動量で決まる)
       state.leftPressActive = true;
       state.leftDownScreenX = e.clientX;

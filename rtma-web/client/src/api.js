@@ -152,7 +152,9 @@ export async function fetchRoutes() {
 /**
  * 路線を新規作成/更新(upsert)する。既存を更新する場合はbody.idを含めること
  * (含めない場合は新規作成扱いになる)。
- * body: { id?, name, tags?, waypoints: { id?, segId, s, x?, z?, stationId?, trackId? }[] }
+ * body: { id?, name, tags?, waypoints: { id?, segId, s, x?, z?, stationId?, boundaryNodeKey? }[] }
+ * (手順4: waypointは番線(trackId)ではなく駅の境界点(boundaryNodeKey)を参照する。
+ *  segId/s/x/zはstationId/boundaryNodeKeyがある場合サーバー側で境界点の値に上書きされる)
  * pathはサーバー側で再計算されるので、呼び出し側は含めなくてよい。
  */
 export async function saveRoute(body) {

@@ -584,17 +584,19 @@ function validateTrack(track, trackIndex) {
 // Station削除・Station更新でのTrack削除、どちらも同じロジックを共有する。
 
 /**
- * stationId(と、指定があればtrackIdも)を参照しているwaypointを持つRouteを列挙する。
+ * stationIdを参照しているwaypointを持つRouteを列挙する(駅削除時の整合性チェック用)。
+ * 【再設計に伴う変更】waypointはもはやtrackIdを保持しない(4番: 系統のwaypointから
+ * trackIdを分離。番線選択は系統ではなく構内運行システム/ダイヤ側の責務になったため)。
+ * そのため判定はstationId一致のみで行う。
  * @param {Array} routes route.json全体
  * @param {string} stationId
- * @param {string|null} trackId 省略時はstationId一致のみで判定(Station全体の削除用)
  * @returns {Array<{ routeId: string, routeName: string, waypointIds: string[] }>}
  */
-function findRoutesReferencing(routes, stationId, trackId = null) {
+function findRoutesReferencing(routes, stationId) {
   const result = [];
   for (const route of routes) {
     const matchedWaypointIds = (route.waypoints ?? [])
-        .filter((wp) => wp.stationId === stationId && (trackId === null || wp.trackId === trackId))
+        .filter((wp) => wp.stationId === stationId)
         .map((wp) => wp.id);
     if (matchedWaypointIds.length > 0) {
       result.push({ routeId: route.id, routeName: route.name, waypointIds: matchedWaypointIds });
@@ -604,16 +606,15 @@ function findRoutesReferencing(routes, stationId, trackId = null) {
 }
 
 /**
- * 指定のstationId(・trackId)を参照しているwaypointを、その場でstationId/trackId=nullに
- * 格下げする(waypoint自体・segId/s/x/z・pathは変更しない=経路の形は壊れない)。
+ * 指定のstationIdを参照しているwaypointを、その場でstationId=nullに格下げする
+ * (waypoint自体・segId/s/x/z・pathは変更しない=経路の形は壊れない)。
  * routes配列を直接書き換える(呼び出し側でwriteJsonArrayすること)。
  */
-function downgradeReferencingWaypoints(routes, stationId, trackId = null) {
+function downgradeReferencingWaypoints(routes, stationId) {
   for (const route of routes) {
     for (const wp of route.waypoints ?? []) {
-      if (wp.stationId === stationId && (trackId === null || wp.trackId === trackId)) {
+      if (wp.stationId === stationId) {
         wp.stationId = null;
-        wp.trackId = null;
       }
     }
   }
@@ -999,25 +1000,12 @@ app.post('/api/stations', (req, res) => {
     return;
   }
 
-  const { station, removedTrackIds } = result;
+  const { station, removedTrackIds: _removedTrackIds } = result;
+  // 【再設計に伴う変更】以前はここでremovedTrackIds(削除された番線)を参照している
+  // Route.waypointを格下げしていたが、waypointはもはやtrackIdを保持しないため
+  // (4番: 系統のwaypointからtrackIdを分離)、番線の削除がRoute側に影響することは無い。
+  // Station全体の削除(DELETE /api/stations/:id)側の整合性チェックのみ引き続き必要。
 
-  // 更新でTrack(番線)が削除された場合、その番線を参照していたRouteのwaypointを
-  // 強制的に格下げする(force指定不要。Station更新時は明示的な削除操作であり、
-  // すでにこのTrackが無くなることをユーザーは把握しているため)。
-  if (removedTrackIds.length > 0) {
-    const routes = readJsonArray(routeFilePath());
-    let anyChanged = false;
-    for (const trackId of removedTrackIds) {
-      const refs = findRoutesReferencing(routes, station.id, trackId);
-      if (refs.length > 0) {
-        downgradeReferencingWaypoints(routes, station.id, trackId);
-        anyChanged = true;
-      }
-    }
-    if (anyChanged) {
-      writeJsonArray(routeFilePath(), routes);
-    }
-  }
 
   const idx = stations.findIndex((s) => s.id === station.id);
   if (idx >= 0) {
@@ -1079,11 +1067,31 @@ function validateWaypoint(wp, index) {
   if (typeof wp.s !== 'number' || !Number.isFinite(wp.s)) {
     return `waypoints[${index}].sは有限な数値である必要があります`;
   }
-  // stationId/trackIdは片方だけ指定されている状態を許さない(駅化するなら両方必須)
-  const hasStation = wp.stationId != null;
-  const hasTrack = wp.trackId != null;
-  if (hasStation !== hasTrack) {
-    return `waypoints[${index}]はstationIdとtrackIdを両方指定するか、両方省略する必要があります`;
+  // 【再設計に伴う変更】trackIdはwaypointから廃止(4番: 系統のwaypointからtrackIdを分離)。
+  // 番線選択は構内運行システム/ダイヤ側の責務になったため、系統側はstationIdのみ持つ。
+  if (wp.trackId !== undefined && wp.trackId !== null) {
+    return `waypoints[${index}].trackIdはもはや使用されません(番線選択は駅の構内運行システム側で行います)`;
+  }
+  return null;
+}
+
+/**
+ * waypointの{segId, s}が、指定されたstationの境界点(boundaryPoints)のいずれかと
+ * 座標的に一致するかを判定する(4番: 系統のwaypointは境界点にのみ紐づけられる)。
+ * 一致する境界点があればそれを返し、無ければnullを返す。
+ */
+function findMatchingBoundary(station, segId, s, allSegments) {
+  const EPS = 1e-3;
+  for (const boundary of station.boundaryPoints ?? []) {
+    for (const se of boundary.segmentEnds ?? []) {
+      if (se.segmentId !== segId) continue;
+      const seg = allSegments.find((s2) => s2.id === segId);
+      if (!seg) continue;
+      const expectedS = se.end === 'start' ? 0 : (seg.length ?? 0);
+      if (Math.abs(s - expectedS) <= EPS) {
+        return boundary;
+      }
+    }
   }
   return null;
 }
@@ -1092,8 +1100,12 @@ function validateWaypoint(wp, index) {
  * RouteのPOST bodyを受け取り、新規id発行・既存id維持・tags正規化・バリデーション・
  * path再計算を行う。
  * 戻り値: { route } | { error, atIndex? }
+ *
+ * @param stations 駅一覧(station.json相当)。waypoint.stationIdが指す駅の境界点との
+ *   整合性検証(findMatchingBoundary)、および始点/終点の境界点タイプ(in/out/both)の
+ *   制約チェックに使う(4番: 系統のwaypointは境界点にのみ紐づけられる)。
  */
-function buildRouteFromBody(body, existing, allSegments) {
+function buildRouteFromBody(body, existing, allSegments, stations) {
   const { name, tags, waypoints } = body;
 
   if (typeof name !== 'string' || !name.trim()) {
@@ -1108,6 +1120,33 @@ function buildRouteFromBody(body, existing, allSegments) {
     if (err) return { error: err };
   }
 
+  // stationIdを持つwaypointは、その駅の境界点のいずれかと座標的に一致していなければならない。
+  // さらに、系統全体の始点(index 0)はin/both、終点(最後)はout/bothの境界点でなければならない
+  // (3.1.3節: 物理的に進入できない方向からの系統作成をUI以前にサーバー側でも弾く)。
+  for (let i = 0; i < waypoints.length; i++) {
+    const wp = waypoints[i];
+    if (wp.stationId == null) continue;
+
+    const station = stations.find((s) => s.id === wp.stationId);
+    if (!station) {
+      return { error: `waypoints[${i}]: 駅が見つかりません(${wp.stationId})`, atIndex: i };
+    }
+    const boundary = findMatchingBoundary(station, wp.segId, wp.s, allSegments);
+    if (!boundary) {
+      return { error: `waypoints[${i}]: 「${station.name}」の境界点と一致しません`, atIndex: i };
+    }
+
+    const isFirst = i === 0;
+    const isLast = i === waypoints.length - 1;
+    const type = boundary.type ?? 'both';
+    if (isFirst && type === 'out') {
+      return { error: `waypoints[${i}]: 「${station.name}」のこの境界点は進出専用のため、系統の始点にはできません`, atIndex: i };
+    }
+    if (isLast && type === 'in') {
+      return { error: `waypoints[${i}]: 「${station.name}」のこの境界点は進入専用のため、系統の終点にはできません`, atIndex: i };
+    }
+  }
+
   const normalizedWaypoints = waypoints.map((wp) => {
     const existingWp = existing?.waypoints?.find((w) => w.id === wp.id);
     return {
@@ -1117,7 +1156,6 @@ function buildRouteFromBody(body, existing, allSegments) {
       x: wp.x ?? null,
       z: wp.z ?? null,
       stationId: wp.stationId ?? null,
-      trackId: wp.trackId ?? null,
     };
   });
 
@@ -1154,8 +1192,9 @@ app.post('/api/routes', (req, res) => {
 
   const routes = readJsonArray(routeFilePath());
   const existing = req.body.id ? routes.find((r) => r.id === req.body.id) : null;
+  const stations = readJsonArray(stationFilePath());
 
-  const result = buildRouteFromBody(req.body, existing, allSegments);
+  const result = buildRouteFromBody(req.body, existing, allSegments, stations);
   if (result.error) {
     res.status(400).json({ error: result.error, atIndex: result.atIndex });
     return;
