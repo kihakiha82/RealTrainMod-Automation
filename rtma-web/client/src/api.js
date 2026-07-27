@@ -82,6 +82,20 @@ export async function saveTimetable(name, data) {
   return res.json();
 }
 
+/** 系統・駅扱いを指定して、構内ルート込みのダイヤを計算する。 */
+export async function calculateRouteTimetable({ routeId, trainResourceName, departure, stationPlans }) {
+  const res = await fetch('/api/calc/route-timetable', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ routeId, trainResourceName, departure, stationPlans }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `系統ダイヤの計算に失敗しました (HTTP ${res.status})`);
+  }
+  return res.json();
+}
+
 /** 車両性能データ(trainspecs.json)を取得する。キーが車両のresourceName。 */
 export async function fetchTrainSpecs() {
   const res = await fetch('/api/trainspecs');

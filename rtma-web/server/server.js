@@ -10,6 +10,7 @@ const { computeAccelProfile, DEFAULT_G } = require('../client/calc/accelProfile'
 const { generateTimetable, tickToClock, clockToTick, TICKS_PER_SECOND } = require('../client/calc/timetableGenerator');
 const { STOP_ICON_IDS, DEFAULT_STOP_ICON_ID } = require('../client/calc/stopIconShapes');
 const { assembleRouteTimetableSegments } = require('../client/calc/timetableAssembler');
+const { TIMETABLE_SCHEMA_VERSION, validateTimetable, normalizeTimetable } = require('./timetableModel');
 
 // stop.sの範囲検証時の許容誤差(浮動小数点の丸め誤差吸収用)
 const EPS_STOP_S = 1e-6;
@@ -428,6 +429,7 @@ app.post('/api/calc/route-timetable', (req, res) => {
   // 同じ並び順(始発→終着)で1つずつ対応させ、番線名等を時刻表エントリにマージする。
   const schedule = result.schedule.map((entry, i) => ({
     ...entry,
+    stationId: stationsWithS[i]?.stationId ?? null,
     trackId: stationsWithS[i]?.trackId ?? null,
     trackName: stationsWithS[i]?.trackName ?? null,
     stopId: stationsWithS[i]?.stopId ?? null,
@@ -443,6 +445,12 @@ app.post('/api/calc/route-timetable', (req, res) => {
     brakeSpecEstimated: true,
     totalLength: profile.totalLength,
     schedule,
+    // 手順6の永続データモデルへ変換しやすいよう、駅計画も正規化して返す。
+    stationPlans: stationPlans.map((plan) => ({
+      ...plan,
+      handling: plan.pass ? 'pass' : 'stop',
+      turnback: plan.turnback === true,
+    })),
   };
 
   const badPath = findNonFiniteNumber(responseBody);
@@ -564,7 +572,20 @@ app.post('/api/timetables/:name', (req, res) => {
   const dir = path.join(DATA_DIR, 'timetables');
   fs.mkdirSync(dir, { recursive: true });
   const filePath = timetableFilePath(req.params.name);
-  fs.writeFile(filePath, JSON.stringify(req.body, null, 2), 'utf-8', (err) => {
+  let body = req.body;
+  // 既存の simple-schedule 保存形式は Mod 互換のため受け入れる。新形式だけを
+  // スキーマ検証し、系統・番線・停車位置への参照切れを保存時に防ぐ。
+  if (body && body.schemaVersion === TIMETABLE_SCHEMA_VERSION) {
+    const routesById = new Map(readJsonArray(routeFilePath()).map((route) => [route.id, route]));
+    const stationsById = new Map(readJsonArray(stationFilePath()).map((station) => [station.id, station]));
+    const error = validateTimetable(body, { routesById, stationsById });
+    if (error) {
+      res.status(400).json({ error });
+      return;
+    }
+    body = normalizeTimetable(body);
+  }
+  fs.writeFile(filePath, JSON.stringify(body, null, 2), 'utf-8', (err) => {
     if (err) {
       res.status(500).json({ error: '保存に失敗しました' });
       return;
