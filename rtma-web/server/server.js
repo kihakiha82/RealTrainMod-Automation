@@ -9,6 +9,8 @@ const { computeSpeedLimitProfile } = require('../client/calc/speedLimitProfile')
 const { computeAccelProfile, DEFAULT_G } = require('../client/calc/accelProfile');
 const { generateTimetable, tickToClock, clockToTick, TICKS_PER_SECOND } = require('../client/calc/timetableGenerator');
 const { STOP_ICON_IDS, DEFAULT_STOP_ICON_ID } = require('../client/calc/stopIconShapes');
+const { assembleRouteTimetableSegments } = require('../client/calc/timetableAssembler');
+
 // stop.sの範囲検証時の許容誤差(浮動小数点の丸め誤差吸収用)
 const EPS_STOP_S = 1e-6;
 const { buildPath } = require('../client/calc/routeBuilder');
@@ -271,6 +273,181 @@ app.post('/api/simple-schedule', (req, res) => {
   const badPath = findNonFiniteNumber(responseBody);
   if (badPath) {
     console.error(`[simple-schedule] 非有限な値(NaN/Infinity)が計算結果に含まれています: ${badPath}`);
+    res.status(500).json({
+      error: `時刻表計算の結果に不正な値(NaN/Infinity)が含まれています: ${badPath}。` +
+          '経路上のレール(極端なカント値等)を確認してください。',
+    });
+    return;
+  }
+
+  res.json(responseBody);
+});
+
+// 系統+駅の構内ルートを結合した、複数駅対応の本格的な時刻表計算。
+// 再設計仕様書5.1節の実装。simple-scheduleと異なり、系統(Route)・駅の番線/停車位置・
+// 構内ルート(Station.internalRoutes)を実際に結合してからRunningTimeCalculatorへ渡す。
+// body: {
+//   routeId: string,
+//   trainResourceName: string,
+//   departure: { hour, minute, second },
+//   stationPlans: [                          // 経路上の駅の並び順(始発→…→終着)通りに指定する
+//     { stationId, trackId, stopId, dwellTicks? },   // 停車
+//     { stationId, pass: true },                     // 通過(中間駅のみ)
+//     ...
+//   ],
+// }
+app.post('/api/calc/route-timetable', (req, res) => {
+  const { routeId, trainResourceName, departure, stationPlans } = req.body;
+
+  if (typeof routeId !== 'string' || !routeId) {
+    res.status(400).json({ error: 'routeIdが必要です' });
+    return;
+  }
+  if (typeof trainResourceName !== 'string' || !trainResourceName) {
+    res.status(400).json({ error: 'trainResourceNameが必要です' });
+    return;
+  }
+  const { hour, minute, second } = departure || {};
+  if (
+      typeof hour !== 'number' || hour < 0 || hour > 23 ||
+      typeof minute !== 'number' || minute < 0 || minute > 59 ||
+      typeof second !== 'number' || second < 0 || second > 59
+  ) {
+    res.status(400).json({ error: '不正な出発時刻です({ hour, minute, second }が必要)' });
+    return;
+  }
+  if (!Array.isArray(stationPlans)) {
+    res.status(400).json({ error: 'stationPlansは配列である必要があります' });
+    return;
+  }
+
+  const allSegments = loadMergedRails();
+  if (!allSegments) {
+    res.status(404).json({
+      error: 'rails-geometry.jsonが見つかりません',
+      path: path.join(DATA_DIR, 'rails-geometry.json'),
+    });
+    return;
+  }
+
+  const routes = readJsonArray(routeFilePath());
+  const route = routes.find((r) => r.id === routeId);
+  if (!route) {
+    res.status(404).json({ error: `系統が見つかりません: ${routeId}` });
+    return;
+  }
+
+  const stations = readJsonArray(stationFilePath());
+  const stationsById = new Map(stations.map((s) => [s.id, s]));
+
+  let assembled;
+  try {
+    assembled = assembleRouteTimetableSegments(route, stationPlans, stationsById, findRailRoute, allSegments);
+  } catch (assembleErr) {
+    res.status(400).json({ error: assembleErr.message });
+    return;
+  }
+
+  let orderedSegments;
+  try {
+    orderedSegments = resolveOrderedSegments(assembled.segRefs, allSegments);
+  } catch (resolveErr) {
+    res.status(400).json({ error: resolveErr.message });
+    return;
+  }
+
+  const profile = buildRouteProfile(orderedSegments);
+  if (profile.points.length < 2) {
+    res.status(400).json({ error: '経路が短すぎます(点数が2未満)' });
+    return;
+  }
+
+  // 各駅の停止位置(segIndexAfter)を、結合後プロファイルの絶対sへ変換する。
+  // (5.1節: enter/exit構内ルートの継ぎ目 = 停止位置そのものなので、再探索は不要)
+  const stationsWithS = assembled.stationStops.map((st) => ({
+    ...st,
+    s: st.segIndexAfter >= orderedSegments.length
+        ? profile.totalLength
+        : profile.segmentOffsets[st.segIndexAfter].offsetS,
+  }));
+
+  const specsPath = path.join(DATA_DIR, 'trainspecs.json');
+  let trainSpecs;
+  try {
+    trainSpecs = JSON.parse(fs.readFileSync(specsPath, 'utf-8'));
+  } catch {
+    res.status(404).json({ error: 'trainspecs.jsonが見つかりません', path: specsPath });
+    return;
+  }
+  const trainSpec = trainSpecs[trainResourceName];
+  if (!trainSpec) {
+    res.status(400).json({ error: `車両specが見つかりません: ${trainResourceName}` });
+    return;
+  }
+
+  const vmax = Math.max(...trainSpec.maxSpeedStages);
+  const aAccelBase = trainSpec.acceleration;
+  // ブレーキ性能はtrainspecs.jsonにまだ無いため、暫定的に加速度と同じ値を代用する(simple-scheduleと同様)。
+  const aBrakeBase = trainSpec.acceleration;
+
+  const stationsForProfile = insertStations(profile, stationsWithS.map((st) => ({ name: st.stationName, s: st.s })));
+
+  const vLimit = computeSpeedLimitProfile(stationsForProfile.points, {
+    vmax,
+    stationIndices: stationsForProfile.stationIndices.map((si) => si.index),
+  });
+  const { aAccelNet, aBrakeNet } = computeAccelProfile(stationsForProfile.points, {
+    aAccelBase,
+    aBrakeBase,
+    g: DEFAULT_G,
+  });
+
+  const startTick = clockToTick(hour, minute, second);
+  const dwellTicksByStation = {};
+  for (const st of stationsWithS) {
+    dwellTicksByStation[st.stationName] = st.dwellTicks ?? 0;
+  }
+
+  let result;
+  try {
+    result = generateTimetable(
+        stationsForProfile.points, vLimit, aAccelNet, aBrakeNet,
+        stationsForProfile.stationIndices, { startTick, dwellTicksByStation },
+    );
+  } catch (genErr) {
+    res.status(400).json({ error: genErr.message });
+    return;
+  }
+
+  const secondsPerDay = 86400;
+  const withClock = (tick) => ({
+    ...tickToClock(tick),
+    dayOffset: Math.floor(tick / TICKS_PER_SECOND / secondsPerDay),
+  });
+  // stationsWithS(駅ごとの番線・停車位置情報)と、generateTimetable()が返すschedule(時刻)を
+  // 同じ並び順(始発→終着)で1つずつ対応させ、番線名等を時刻表エントリにマージする。
+  const schedule = result.schedule.map((entry, i) => ({
+    ...entry,
+    trackId: stationsWithS[i]?.trackId ?? null,
+    trackName: stationsWithS[i]?.trackName ?? null,
+    stopId: stationsWithS[i]?.stopId ?? null,
+    arrivalClock: entry.arrivalTick != null ? withClock(entry.arrivalTick) : null,
+    departureClock: entry.departureTick != null ? withClock(entry.departureTick) : null,
+  }));
+
+  const responseBody = {
+    routeId,
+    routeName: route.name,
+    trainResourceName,
+    departure,
+    brakeSpecEstimated: true,
+    totalLength: profile.totalLength,
+    schedule,
+  };
+
+  const badPath = findNonFiniteNumber(responseBody);
+  if (badPath) {
+    console.error(`[route-timetable] 非有限な値(NaN/Infinity)が計算結果に含まれています: ${badPath}`);
     res.status(500).json({
       error: `時刻表計算の結果に不正な値(NaN/Infinity)が含まれています: ${badPath}。` +
           '経路上のレール(極端なカント値等)を確認してください。',
@@ -1123,6 +1300,10 @@ function buildRouteFromBody(body, existing, allSegments, stations) {
   // stationIdを持つwaypointは、その駅の境界点のいずれかと座標的に一致していなければならない。
   // さらに、系統全体の始点(index 0)はin/both、終点(最後)はout/bothの境界点でなければならない
   // (3.1.3節: 物理的に進入できない方向からの系統作成をUI以前にサーバー側でも弾く)。
+  //
+  // ここで一致した境界点のnodeKeyは、系統+構内ルート結合(5節、timetableAssembler.js)が
+  // 再探索なしにそのまま使えるよう、waypointごとにboundaryNodeKeyMapへ控えておく。
+  const boundaryNodeKeyMap = new Map(); // waypoints配列内のインデックス -> nodeKey
   for (let i = 0; i < waypoints.length; i++) {
     const wp = waypoints[i];
     if (wp.stationId == null) continue;
@@ -1135,6 +1316,7 @@ function buildRouteFromBody(body, existing, allSegments, stations) {
     if (!boundary) {
       return { error: `waypoints[${i}]: 「${station.name}」の境界点と一致しません`, atIndex: i };
     }
+    boundaryNodeKeyMap.set(i, boundary.nodeKey);
 
     const isFirst = i === 0;
     const isLast = i === waypoints.length - 1;
@@ -1147,7 +1329,7 @@ function buildRouteFromBody(body, existing, allSegments, stations) {
     }
   }
 
-  const normalizedWaypoints = waypoints.map((wp) => {
+  const normalizedWaypoints = waypoints.map((wp, i) => {
     const existingWp = existing?.waypoints?.find((w) => w.id === wp.id);
     return {
       id: wp.id && existingWp ? wp.id : generateId('wp'),
@@ -1156,6 +1338,7 @@ function buildRouteFromBody(body, existing, allSegments, stations) {
       x: wp.x ?? null,
       z: wp.z ?? null,
       stationId: wp.stationId ?? null,
+      boundaryNodeKey: boundaryNodeKeyMap.get(i) ?? null,
     };
   });
 
