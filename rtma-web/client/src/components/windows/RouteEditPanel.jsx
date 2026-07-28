@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { fetchStations } from '../api';
+import { fetchStations } from '../../api.js';
 
 /**
  * 路線編集パネル。TimeEditorと同じ「フローティングパネル」の見た目・自己完結の
@@ -25,7 +25,7 @@ import { fetchStations } from '../api';
  *   onDetach: (index: number) => void(手動でstationIdの紐付けを解除する)
  */
 
-import { Window } from './Window';
+import { Window } from '../Window.jsx';
 export default function RouteEditPanel({
                                            waypoints, error, saveStatus, saveError,
                                            onRemoveLast, onClear, onSave, onDetach, zIndex, onFocus

@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import Map2D from './components/Map2D';
-import TimeEditor from './components/TimeEditor';
-import RouteEditPanel from './components/RouteEditPanel';
-import StationEditPanel from './components/StationEditPanel';
-import { fetchRails, fetchPlayerPosition, fetchTime, saveTime, fetchRouteProfile, fetchTrainSpecs, fetchSimpleSchedule, saveTimetable, fetchTrainAssignments, assignTrain, unassignTrain, saveRoute, fetchStations } from './api';
+import TimeEditPanel from './components/windows/TimeEditPanel.jsx';
+import RouteEditPanel from './components/windows/RouteEditPanel.jsx';
+import StationEditPanel from './components/windows/StationEditPanel.jsx';
+import { fetchRails, fetchPlayerPosition, fetchTime, saveTime, fetchRouteProfile, fetchTrainSpecs,  fetchTrainAssignments, saveRoute, fetchStations } from './api';
 import { extrapolateTime, extrapolateFullDateTime, formatDateTime } from './timeUtils';
 import { findRailRoute } from './mapEngine/railGraph';
+import SimpleStaffPanel from "./components/windows/SimpleStaffPanel.jsx";
 
 export default function App() {
   const [segments,       setSegments]       = useState([]);
@@ -70,6 +71,7 @@ export default function App() {
   const [saveStaffName,  setSaveStaffName]  = useState('');
   const [saveStaffStatus,setSaveStaffStatus]= useState(null); // 'saving' | 'saved' | 'error' | null
 
+
   // 列車への適用
   const [trains,         setTrains]         = useState([]); // /api/trains の現在値
   const [assignments,    setAssignments]     = useState({}); // /api/train-assignments の現在値
@@ -87,17 +89,18 @@ export default function App() {
   const timeSnapshotRef = useRef(null);
   const snapshotRef = useRef(null);
   //window関連
-  //windowの順番z-index
   const [showTimeEditor, setShowTimeEditor] = useState(false);
   const [showRouteEditPanel, setShowRouteEditPanel] = useState(false);
   const [showStationEditor, setShowStationEditor] = useState(false);
+  const [showSimpleStaffPanel, setShowSimpleStaffPanel] = useState(false);
 
-  const [nextZIndex, setNextZIndex] = useState(100);
+  const [nextZIndex, setNextZIndex] = useState(101);
 
   const [windowZIndices, setWindowZIndices] = useState({
     timeEditor: 100,
     routePanel: 100,
-    stationPanel: 100
+    stationPanel: 100,
+    simpleStaffPanel: 100,
   });
 
   //windowを最前面に持ってくる
@@ -184,15 +187,7 @@ export default function App() {
     addRouteEditWaypoint(railPoint, railPoint.stationId ?? null);
   }
 
-  /** 始点/終点マーカーをドラッグして位置が確定した時に呼ばれる */
-  function handleRoutePointDrag(role, point) {
-    if (role === 'start') setRouteStart(point);
-    else setRouteEnd(point);
-    setRouteResult(null); // 位置が変わったら前回の計算結果・経路は無効
-    setRoutePath(null);
-    setSchedule(null);
-    setSaveStaffStatus(null);
-  }
+
 
   /**
    * クリック位置(railPoint: {segId, s})が、mapStations(地図表示用に取得済みの駅一覧)の
@@ -216,6 +211,16 @@ export default function App() {
       }
     }
     return null;
+  }
+
+  /** 始点/終点マーカーをドラッグして位置が確定した時に呼ばれる */
+  function handleRoutePointDrag(role, point) {
+    if (role === 'start') setRouteStart(point);
+    else setRouteEnd(point);
+    setRouteResult(null); // 位置が変わったら前回の計算結果・経路は無効
+    setRoutePath(null);
+    setSchedule(null);
+    setSaveStaffStatus(null);
   }
 
 
@@ -324,70 +329,6 @@ export default function App() {
     setRouteEditSaveError(null);
   }
 
-
-  async function handleAssignTrain(uuid) {
-    if (!saveStaffName) return;
-    setAssignStatus(prev => ({ ...prev, [uuid]: 'assigning' }));
-    try {
-      await assignTrain(uuid, saveStaffName, departureTime);
-      const data = await fetchTrainAssignments();
-      setAssignments(data);
-      setAssignStatus(prev => ({ ...prev, [uuid]: 'assigned' }));
-    } catch (e) {
-      setAssignStatus(prev => ({ ...prev, [uuid]: 'error' }));
-    }
-  }
-
-  /** 指定列車のスタフ紐付けを解除する */
-  async function handleUnassignTrain(uuid) {
-    try {
-      await unassignTrain(uuid);
-      const data = await fetchTrainAssignments();
-      setAssignments(data);
-      setAssignStatus(prev => { const next = { ...prev }; delete next[uuid]; return next; });
-    } catch (e) {
-      console.warn('紐付け解除に失敗しました', e);
-    }
-  }
-
-  /** 簡易スタフ: 現在の経路(routePath)+選択中の車両+出発時刻から簡易スタフを計算する */
-  async function handleComputeSchedule() {
-    if (!routePath || !selectedTrain) return;
-    setIsComputingSchedule(true);
-    setScheduleError(null);
-    setSchedule(null);
-    setSaveStaffStatus(null);
-    try {
-      const result = await fetchSimpleSchedule(routePath, selectedTrain, departureTime);
-      setSchedule(result);
-    } catch (e) {
-      setScheduleError(e.message);
-    } finally {
-      setIsComputingSchedule(false);
-    }
-  }
-
-  /** 簡易スタフの保存(既存の時刻表保存APIにそのまま保存する) */
-  async function handleSaveStaff() {
-    if (!schedule || !saveStaffName) return;
-    setSaveStaffStatus('saving');
-    try {
-      await saveTimetable(saveStaffName, schedule);
-      setSaveStaffStatus('saved');
-    } catch (e) {
-      setSaveStaffStatus('error');
-    }
-  }
-
-  /** tick由来のclock({hour,minute,second,dayOffset})を "HH:MM:SS" (+n日)表示に整形する */
-  function formatScheduleClock(clock) {
-    if (!clock) return '--:--:--';
-    const pad = (n) => String(n).padStart(2, '0');
-    const base = `${pad(clock.hour)}:${pad(clock.minute)}:${pad(clock.second)}`;
-    return clock.dayOffset > 0 ? `${base} (+${clock.dayOffset}日)` : base;
-  }
-
-  /** 簡易運行: 現在の始点/終点からrailGraphで経路を求め、/api/route-profileへ渡す */
   async function handleComputeRoute() {
     if (!routeStart || !routeEnd) return;
     setIsComputingRoute(true);
@@ -418,6 +359,13 @@ export default function App() {
       setIsComputingRoute(false);
     }
   }
+
+
+
+
+
+
+
 
   // timeSnapshotRefを常に最新に保つ(setInterval内から参照するため)
   useEffect(() => { timeSnapshotRef.current = timeSnapshot; }, [timeSnapshot]);
@@ -648,26 +596,14 @@ export default function App() {
     return () => { cancelled = true; clearTimeout(timer); };
   }, []);
 
-  // ── train-assignmentsポーリング(スタフが保存・解除されたら即反映 + 5秒ごと) ──
-  useEffect(() => {
-    let timer;
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const data = await fetchTrainAssignments();
-        if (!cancelled) setAssignments(data);
-      } catch { /* 無視 */ }
-      finally { if (!cancelled) timer = setTimeout(poll, 5000); }
-    };
-    poll();
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, []);
+
 
   // ── 駅一覧(地図上の長方形・番線枠線・停車位置アイコン表示用)。1回だけ取得し、
   // 以後はRouteEditPanel/StationEditPanel保存時のrefreshMapStations呼び出しで更新する ──
   useEffect(() => {
     refreshMapStations();
   }, []);
+
 
   // ── 車両データ(trainspecs)の取得。簡易スタフの車両選択に使う。1回だけでよい ──
   useEffect(() => {
@@ -679,12 +615,18 @@ export default function App() {
         setTrainSpecs(specs);
         const firstName = Object.keys(specs)[0];
         if (firstName) setSelectedTrain(firstName);
+
+        // assignments の初期読み込みもここで行うと良い
+        const assignData = await fetchTrainAssignments();
+        if (!cancelled) setAssignments(assignData);
       } catch (e) {
-        console.warn('車両データの取得に失敗しました', e);
+        console.warn('データの取得に失敗しました', e);
       }
     })();
     return () => { cancelled = true; };
   }, []);
+
+
 
   return (
       <div className="app">
@@ -711,38 +653,7 @@ export default function App() {
                 </button>
               </div>
           )}
-          {(routeStart || routeEnd) && (
-              <div className="topbar__status">
-                簡易運行: 始点{routeStart ? '✓' : '未設定'} / 終点{routeEnd ? '✓' : '未設定'}
-                <button
-                    className="mode-btn"
-                    style={{ marginLeft: 8 }}
-                    disabled={!routeStart || !routeEnd || isComputingRoute}
-                    onClick={handleComputeRoute}
-                >
-                  {isComputingRoute ? '計算中...' : '経路を計算'}
-                </button>
-                <button
-                    className="mode-btn"
-                    style={{ marginLeft: 4 }}
-                    onClick={() => {
-                      setRouteStart(null); setRouteEnd(null); setRouteResult(null); setRoutePath(null);
-                      setSchedule(null); setScheduleError(null); setSaveStaffStatus(null);
-                    }}
-                >
-                  クリア
-                </button>
-                {routeResult?.ok && (
-                    <span style={{ marginLeft: 8, color: 'var(--green)' }}>
-                      ✓ {routeResult.segmentCount}区間 / 距離{routeResult.totalLength.toFixed(1)}ブロック
-                      / 点数{routeResult.pointCount}
-                    </span>
-                )}
-                {routeResult?.error && (
-                    <span style={{ marginLeft: 8, color: 'var(--red)' }}>✗ {routeResult.error}</span>
-                )}
-              </div>
-          )}
+
           {/* 路線編集(4a/4b)の詳細操作パネルはmap-root側のRouteEditPanelに移設。ここでは件数だけ表示する */}
           {routeEditWaypoints.length > 0 && (
               <div className="topbar__status">
@@ -750,122 +661,8 @@ export default function App() {
                 {routeEditError && <span style={{ color: 'var(--red)', marginLeft: 6 }}>✗未接続あり</span>}
               </div>
           )}
-          {routeResult?.ok && (
-              <div className="topbar__status" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                簡易スタフ:
-                <select
-                    value={selectedTrain}
-                    onChange={(e) => setSelectedTrain(e.target.value)}
-                    disabled={!trainSpecs}
-                >
-                  {!trainSpecs && <option>車両データ取得中...</option>}
-                  {trainSpecs && Object.keys(trainSpecs).map((name) => (
-                      <option key={name} value={name}>{name}</option>
-                  ))}
-                </select>
-                出発
-                <input
-                    type="time"
-                    step="1"
-                    value={
-                        `${String(departureTime.hour).padStart(2, '0')}:` +
-                        `${String(departureTime.minute).padStart(2, '0')}:` +
-                        `${String(departureTime.second).padStart(2, '0')}`
-                    }
-                    onChange={(e) => {
-                      const [h, m, s] = e.target.value.split(':').map(Number);
-                      setDepartureTime({ hour: h || 0, minute: m || 0, second: s || 0 });
-                    }}
-                />
-                <button
-                    className="mode-btn"
-                    disabled={!selectedTrain || isComputingSchedule}
-                    onClick={handleComputeSchedule}
-                >
-                  {isComputingSchedule ? '計算中...' : 'スタフを作成'}
-                </button>
 
-                {schedule && (() => {
-                  const start = schedule.schedule[0];
-                  const end = schedule.schedule[schedule.schedule.length - 1];
-                  return (
-                      <span style={{ color: 'var(--green)' }}>
-                        ✓ {formatScheduleClock(start.departureClock)}発 →{' '}
-                        {formatScheduleClock(end.arrivalClock)}着
-                        (所要{(end.legDurationTicks / 20).toFixed(1)}秒)
-                        {schedule.brakeSpecEstimated && (
-                            <span style={{ marginLeft: 4, color: 'var(--yellow, orange)' }}>
-                              ⚠ブレーキ性能は暫定値(加速度と同じ値)です
-                            </span>
-                        )}
-                      </span>
-                  );
-                })()}
-                {scheduleError && (
-                    <span style={{ color: 'var(--red)' }}>✗ {scheduleError}</span>
-                )}
 
-                {schedule && (
-                    <>
-                      <input
-                          type="text"
-                          placeholder="保存名"
-                          value={saveStaffName}
-                          onChange={(e) => setSaveStaffName(e.target.value)}
-                          style={{ width: 100 }}
-                      />
-                      <button
-                          className="mode-btn"
-                          disabled={!saveStaffName || saveStaffStatus === 'saving'}
-                          onClick={handleSaveStaff}
-                      >
-                        保存
-                      </button>
-                      {saveStaffStatus === 'saved' && <span style={{ color: 'var(--green)' }}>✓ 保存しました</span>}
-                      {saveStaffStatus === 'error' && <span style={{ color: 'var(--red)' }}>✗ 保存に失敗しました</span>}
-                    </>
-                )}
-              </div>
-          )}
-          {/* 列車への適用パネル: スタフが保存済みで列車が1両以上ワールドにいる場合に表示 */}
-          {saveStaffStatus === 'saved' && saveStaffName && trains.length > 0 && (() => {
-            const candidates = trains.filter(
-                t => t.resourceName === selectedTrain && t.isControlCar
-            );
-            if (candidates.length === 0) return null;
-            return (
-                <div className="topbar__status" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  列車に適用:
-                  {candidates.map(t => {
-                    const assigned = assignments[t.uuid];
-                    const status = assignStatus[t.uuid];
-                    const label = t.customName || `${t.resourceName} (formationId:${t.formationId})`;
-                    return (
-                        <span key={t.uuid} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                          <span style={{ fontSize: '0.9em' }}>{label}</span>
-                          {assigned?.timetableName === saveStaffName ? (
-                              <>
-                                <span style={{ color: 'var(--green)' }}>✓ 適用中</span>
-                                <button className="mode-btn" onClick={() => handleUnassignTrain(t.uuid)}>
-                                  解除
-                                </button>
-                              </>
-                          ) : (
-                              <button
-                                  className="mode-btn"
-                                  disabled={status === 'assigning'}
-                                  onClick={() => handleAssignTrain(t.uuid)}
-                              >
-                                {status === 'assigning' ? '適用中...' : '適用'}
-                              </button>
-                          )}
-                          {status === 'error' && <span style={{ color: 'var(--red)' }}>✗</span>}
-                        </span>
-                    );
-                  })}
-                </div>
-            );
-          })()}
           <div className="topbar__modes">
             <button className="mode-btn is-active">2D</button>
             <button className="mode-btn" disabled title="準備中">3D</button>
@@ -877,6 +674,13 @@ export default function App() {
                 onClick={() => setShowStationEditPanel((v) => !v)}
             >
               🚉 駅管理
+            </button>
+
+            <button
+                className={`mode-btn${showSimpleStaffPanel ? ' is-active' : ''}`}
+                onClick={() => setShowSimpleStaffPanel((v) => !v)}
+            >
+              簡易運行
             </button>
           </div>
         </header>
@@ -899,7 +703,7 @@ export default function App() {
               ref={mapRef}
           />
           {!isServerRunning && (
-              <TimeEditor
+              <TimeEditPanel
                   snapshot={serverSnapshot}
                   onSaved={async () => {
                     try {
@@ -939,6 +743,26 @@ export default function App() {
                   onStationsChanged={refreshMapStations}
                   zIndex={windowZIndices.stationPanel}
                   onFocus={() => bringToFront('stationPanel')}
+              />
+          )}
+
+          {showSimpleStaffPanel && (
+              <SimpleStaffPanel
+                  segments={segments}            // 経路計算用
+                  trains={trains}                // 列車一覧
+                  routeStart={routeStart}   // App.jsx側で管理している始点
+                  routeEnd={routeEnd}       // App.jsx側で管理している終点
+                  onClearRoute={() => {
+                    setRouteStart(null);
+                    setRouteEnd(null);
+                    setRoutePath(null);
+                  }}
+                  routePath={routePath}
+                  trainSpecs={trainSpecs}
+                  setRoutePath={(route) => setRoutePath(route)}
+                  onClose={() => setShowSimpleStaffPanel(false)}
+                  zIndex={windowZIndices.simpleStaffPanel}
+                  onFocus={() => bringToFront('simpleStaffPanel')}
               />
           )}
         </main>

@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
-import { fetchStations, saveStation, deleteStation } from '../api';
-import IconPicker from './IconPicker';
-import { DEFAULT_STOP_ICON_ID, STOP_ICON_SHAPES } from '../iconShapes';
-import { orderSegmentChain, deriveBoundaryPoints } from '../mapEngine/railGraph';
-import { localPointToTrackDistance } from '../trackGeometry';
+import { fetchStations, saveStation, deleteStation } from '../../api.js';
+import IconPicker from '../IconPicker.jsx';
+import { DEFAULT_STOP_ICON_ID, STOP_ICON_SHAPES } from '../../iconShapes.js';
+import { orderSegmentChain, deriveBoundaryPoints } from '../../mapEngine/railGraph.js';
+import { localPointToTrackDistance } from '../../trackGeometry.js';
 
 /**
  * 駅(Station)管理パネル。5章 + 再設計仕様書1章(番線の複数セグメント対応)の実装。
- * TimeEditor/RouteEditPanelと同じ「フローティングパネル」パターンで自己完結する。
+ * TimeEditPanel/RouteEditPanelと同じ「フローティングパネル」パターンで自己完結する。
  *
  * 編集はローカルの「draft」(下書き)に対して行い、「保存」ボタンを押すまでは
  * サーバーに反映しない(仕様書5.1の1〜3が下書き編集、4が保存、という段階構成のため)。
@@ -36,7 +36,7 @@ import { localPointToTrackDistance } from '../trackGeometry';
  */
 // 新規作成時のデフォルト色(見分けやすいよう複数用意して使い回す)
 
-import { Window } from './Window';
+import { Window } from '../Window.jsx';
 
 const DEFAULT_COLORS = ['#4da3ff', '#ffb700', '#3ddc84', '#e85d4d', '#a374ff', '#ff7edb'];
 function pickDefaultColor(existingCount) {
