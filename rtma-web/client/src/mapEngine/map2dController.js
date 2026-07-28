@@ -939,13 +939,8 @@ export function createMap2DController(container, options = {}) {
 
   /**
    * 駅の範囲を示す半透明の長方形を描画する。
-   * バウンディングボックスは「その駅の全番線にある停車位置(StopVariant)の
-   * ワールド座標」の集合から算出する(番線自体は物理的にセグメント全体に
-   * 紐づく実体で、駅としての"範囲"を表す固有の点を持たないため)。
-   * 【既知の制約】まだ停車位置が1つも設定されていない番線は、この矩形が
-   * 必ずしもその番線の位置を横切ることを保証しない(停車位置が無いと
-   * バウンディングボックスの計算材料が無いため)。停車位置を追加すれば
-   * 矩形はそれに合わせて広がる。
+   * バウンディングボックスは、その駅の全番線に紐づく構内レールの
+   * すべての座標(ポリライン)を包含するように算出する。
    */
   function drawStationRectangles() {
     const padding = 3; // ワールド座標(ブロック)単位の余白
@@ -953,10 +948,14 @@ export function createMap2DController(container, options = {}) {
     for (const station of state.stations) {
       let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
 
-      for (const track of station.tracks ?? []) {
-        for (const stop of track.stops ?? []) {
-          const point = pointAtTrackDistance(state.segments, track.segments, stop.s);
-          if (!point) continue;
+      for (const railSegmentId of station.railSegmentIds ?? []) {
+
+        const seg = state.segments.find(s => s.id === railSegmentId);
+        if (!seg) continue;
+        const points = pointsOf(seg);
+
+        // すべての頂点座標から最大値・最小値を算出
+        for (const point of points) {
           minX = Math.min(minX, point.x);
           maxX = Math.max(maxX, point.x);
           minZ = Math.min(minZ, point.z);
@@ -964,7 +963,7 @@ export function createMap2DController(container, options = {}) {
         }
       }
 
-      if (!isFinite(minX)) continue; // 停車位置が1つも無ければ矩形は描かない
+      if (!isFinite(minX)) continue;
 
       const [sx0, sy0] = toScreen(minX - padding, minZ - padding);
       const [sx1, sy1] = toScreen(maxX + padding, maxZ + padding);
