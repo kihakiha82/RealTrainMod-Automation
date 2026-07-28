@@ -86,6 +86,28 @@ export default function App() {
   // setInterval内のstaleクロージャを防ぐため、常に最新のtimeSnapshotをrefでも保持する
   const timeSnapshotRef = useRef(null);
   const snapshotRef = useRef(null);
+  //window関連
+  //windowの順番z-index
+  const [showTimeEditor, setShowTimeEditor] = useState(false);
+  const [showRouteEditPanel, setShowRouteEditPanel] = useState(false);
+  const [showStationEditor, setShowStationEditor] = useState(false);
+
+  const [nextZIndex, setNextZIndex] = useState(100);
+
+  const [windowZIndices, setWindowZIndices] = useState({
+    timeEditor: 100,
+    routePanel: 100,
+    stationPanel: 100
+  });
+
+  //windowを最前面に持ってくる
+  const bringToFront = (windowName) => {
+    setNextZIndex(prev => prev + 1);
+    setWindowZIndices(prev => ({
+      ...prev,
+      [windowName]: nextZIndex + 1
+    }));
+  };
 
   /**
    * レール右クリックメニューの項目が実行された時に呼ばれる。
@@ -886,6 +908,9 @@ export default function App() {
                       setIsExtrapolating(false);
                     } catch { /* 次の5秒ポーリングで更新される */ }
                   }}
+                  onClose={() => setShowTimeEditor(false)}
+                  zIndex={windowZIndices.timeEditor}
+                  onFocus={() => bringToFront('timeEditor')}
               />
           )}
           {routeEditWaypoints.length > 0 && (
@@ -899,6 +924,8 @@ export default function App() {
                   onSave={handleSaveRouteEdit}
                   onDetach={handleDetachStation}
                   onStationsChanged={refreshMapStations}
+                  zIndex={windowZIndices.routePanel}
+                  onFocus={() => bringToFront('routePanel')}
               />
           )}
           {showStationEditPanel && (
@@ -910,6 +937,8 @@ export default function App() {
                   onConsumeStopPoint={() => setPendingStopPoint(null)}
                   onClose={() => setShowStationEditPanel(false)}
                   onStationsChanged={refreshMapStations}
+                  zIndex={windowZIndices.stationPanel}
+                  onFocus={() => bringToFront('stationPanel')}
               />
           )}
         </main>

@@ -302,3 +302,137 @@ body,
   left: 100%;
   margin-left: 2px;
 }
+
+.window-rnd {
+  box-sizing: border-box;
+}
+
+/* ウィンドウ本体 */
+.window {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  font-family: var(--mono);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* アクティブ（選択中）ウィンドウの強調 */
+.window.is-active {
+  border-color: var(--amber);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(232, 163, 61, 0.15);
+}
+
+/* ヘッダーバー */
+.window__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--line);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.2);
+  cursor: grab;
+  user-select: none;
+}
+
+.window__header:active {
+  cursor: grabbing;
+}
+
+/* タイトルエリア */
+.window__title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* アクティブ状態を示すインジケータードット */
+.window__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.window.is-active .window__dot {
+  background: var(--amber);
+  box-shadow: 0 0 6px var(--amber);
+}
+
+/* タイトルテキスト */
+.window__title {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.05em;
+}
+
+/* コントロールエリア */
+.window__controls {
+  display: flex;
+  align-items: center;
+}
+
+/* 閉じる（✕）ボタン */
+.window__close-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.window__close-btn:hover {
+  background: rgba(232, 93, 77, 0.2);
+  color: var(--red);
+}
+
+.window__close-btn:active {
+  background: var(--red);
+  color: var(--bg);
+}
+
+/* ウィンドウの中身（コンテンツ領域） */
+.window__body {
+  flex: 1;
+  overflow: hidden;
+  background: var(--panel);
+  position: relative;
+}
+
+/* ===== 各エディタパネルの配置リセット ===== */
+/* Windowの中に配置されるパネル側の「画面右上に固定表示する」といった絶対配置を打ち消します */
+.window__body .time-editor,
+.window__body .time-editor--left,
+.window__body .time-editor--bottom-left {
+  position: static;
+  top: auto;
+  bottom: auto;
+  left: auto;
+  right: auto;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  max-height: none;
+  padding: 0;
+  z-index: auto;
+}

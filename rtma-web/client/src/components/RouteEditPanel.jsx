@@ -24,116 +24,126 @@ import { fetchStations } from '../api';
  *   onSave: (name: string, tags: string[]) => void
  *   onDetach: (index: number) => void(手動でstationIdの紐付けを解除する)
  */
+
+import { Window } from './Window';
 export default function RouteEditPanel({
-                                         waypoints, error, saveStatus, saveError,
-                                         onRemoveLast, onClear, onSave, onDetach,
+                                           waypoints, error, saveStatus, saveError,
+                                           onRemoveLast, onClear, onSave, onDetach, zIndex, onFocus
                                        }) {
-  const [stations, setStations] = useState([]);
-  const [stationsError, setStationsError] = useState(null);
 
-  const [name, setName] = useState('');
-  const [tagsInput, setTagsInput] = useState('');
+    const [stations, setStations] = useState([]);
+    const [stationsError, setStationsError] = useState(null);
 
-  // 駅名の表示用に一覧を取得する(境界点タイプの表示にも使う)。
-  useEffect(() => {
-    let cancelled = false;
-    fetchStations()
-        .then((list) => { if (!cancelled) setStations(list); })
-        .catch((e) => { if (!cancelled) setStationsError(e.message); });
-    return () => { cancelled = true; };
-  }, []);
+    const [name, setName] = useState('');
+    const [tagsInput, setTagsInput] = useState('');
 
-  function describeWaypointStation(wp) {
-    if (!wp.stationId) return null;
-    const station = stations.find((s) => s.id === wp.stationId);
-    if (!station) return { name: '(不明な駅)', typeLabel: '' };
-    const boundary = (station.boundaryPoints ?? []).find((b) =>
-        (b.segmentEnds ?? []).some((se) => se.segmentId === wp.segId)
-    );
-    const typeLabel = { in: '進入専用', out: '進出専用', both: '出入口' }[boundary?.type ?? 'both'];
-    return { name: station.name, typeLabel };
-  }
+    // 駅名の表示用に一覧を取得する(境界点タイプの表示にも使う)。
+    useEffect(() => {
+        let cancelled = false;
+        fetchStations()
+            .then((list) => { if (!cancelled) setStations(list); })
+            .catch((e) => { if (!cancelled) setStationsError(e.message); });
+        return () => { cancelled = true; };
+    }, []);
 
-  const canSave = waypoints.length >= 2 && !error && name.trim();
+    function describeWaypointStation(wp) {
+        if (!wp.stationId) return null;
+        const station = stations.find((s) => s.id === wp.stationId);
+        if (!station) return { name: '(不明な駅)', typeLabel: '' };
+        const boundary = (station.boundaryPoints ?? []).find((b) =>
+            (b.segmentEnds ?? []).some((se) => se.segmentId === wp.segId)
+        );
+        const typeLabel = { in: '進入専用', out: '進出専用', both: '出入口' }[boundary?.type ?? 'both'];
+        return { name: station.name, typeLabel };
+    }
 
-  return (
-      <div className="time-editor time-editor--left" style={{ minWidth: 320, maxHeight: '70vh', overflowY: 'auto' }}>
-        <div className="time-editor__title">🛤 路線編集(経由点{waypoints.length}点)</div>
+    const canSave = waypoints.length >= 2 && !error && name.trim();
 
-        {stationsError && <div className="time-editor__error">駅一覧の取得に失敗しました: {stationsError}</div>}
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, margin: '10px 0' }}>
-          {waypoints.map((wp, index) => {
-            const stationInfo = describeWaypointStation(wp);
-            return (
-                <div key={index} style={{
-                  display: 'flex', alignItems: 'center', gap: 6, fontSize: 12,
-                  padding: '4px 6px', borderRadius: 4,
-                  background: error && (error.atIndex === index || error.atIndex === index - 1) ? 'rgba(232,93,77,0.15)' : 'transparent',
-                }}>
-                  <span style={{ color: 'var(--amber)', width: 18, flexShrink: 0 }}>{index + 1}</span>
-                  <span style={{ flex: 1 }}>
-                {stationInfo ? `${stationInfo.name}(境界点・${stationInfo.typeLabel})` : '経由点'}
-              </span>
-                  {stationInfo && (
-                      <button className="mode-btn" onClick={() => onDetach(index)}>解除</button>
-                  )}
-                  {index < waypoints.length - 1 && error?.atIndex === index && (
-                      <span style={{ color: 'var(--red)', fontSize: 11 }}>✗未接続</span>
-                  )}
-                </div>
-            );
-          })}
-          {waypoints.length === 0 && (
-              <div className="time-editor__note">
-                レールを右クリック →「路線編集」→「経由点として追加」で経由点を積み上げてください。
-                既に組み上がった経路の途中を右クリックすると、その位置に挿入されます。
-                駅の境界点マーカーをクリックすると、自動的にその駅への出入りとして認識されます。
-              </div>
-          )}
-        </div>
-
-        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-          <button className="mode-btn" onClick={onRemoveLast} disabled={waypoints.length === 0}>最後を取消</button>
-          <button className="mode-btn" onClick={onClear} disabled={waypoints.length === 0}>クリア</button>
-        </div>
-
-        {error && (
-            <div className="time-editor__error">
-              経由点{error.atIndex + 1}と{error.atIndex + 2}が線路で繋がっていません
-            </div>
-        )}
-
-        <div className="time-editor__fields">
-          <label className="time-editor__field">
-            <span>路線名</span>
-            <input type="text" value={name} onChange={(e) => setName(e.target.value)} style={{ flex: 1 }} />
-          </label>
-          <label className="time-editor__field">
-            <span>タグ</span>
-            <input
-                type="text"
-                placeholder="カンマ区切り"
-                value={tagsInput}
-                onChange={(e) => setTagsInput(e.target.value)}
-                style={{ flex: 1 }}
-            />
-          </label>
-        </div>
-
-        {saveStatus === 'error' && <div className="time-editor__error">{saveError}</div>}
-        {saveStatus === 'saved' && <div className="time-editor__note" style={{ color: 'var(--green)' }}>✓ 保存しました</div>}
-
-        <button
-            className="time-editor__btn"
-            disabled={!canSave || saveStatus === 'saving'}
-            onClick={() => {
-              const tags = tagsInput.split(',').map((t) => t.trim()).filter(Boolean);
-              onSave(name.trim(), tags);
-            }}
+    return (
+        <Window
+            title={`🛤 路線編集(経由点${waypoints.length}点)`}
+            defaultPos={{ x: 20, y: 80, width: 340, height: 450 }}
+            onClose={onClear}
+            zIndex={zIndex}
+            onFocus={onFocus}
         >
-          {saveStatus === 'saving' ? '保存中...' : '路線を保存'}
-        </button>
-      </div>
-  );
+            <div style={{ padding: '14px 16px', height: '100%', overflowY: 'auto' }}>
+                {stationsError && <div className="time-editor__error">駅一覧の取得に失敗しました: {stationsError}</div>}
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, margin: '10px 0' }}>
+                    {waypoints.map((wp, index) => {
+                        const stationInfo = describeWaypointStation(wp);
+                        return (
+                            <div key={index} style={{
+                                display: 'flex', alignItems: 'center', gap: 6, fontSize: 12,
+                                padding: '4px 6px', borderRadius: 4,
+                                background: error && (error.atIndex === index || error.atIndex === index - 1) ? 'rgba(232,93,77,0.15)' : 'transparent',
+                            }}>
+                                <span style={{ color: 'var(--amber)', width: 18, flexShrink: 0 }}>{index + 1}</span>
+                                <span style={{ flex: 1 }}>
+                  {stationInfo ? `${stationInfo.name}(境界点・${stationInfo.typeLabel})` : '経由点'}
+                </span>
+                                {stationInfo && (
+                                    <button className="mode-btn" onClick={() => onDetach(index)}>解除</button>
+                                )}
+                                {index < waypoints.length - 1 && error?.atIndex === index && (
+                                    <span style={{ color: 'var(--red)', fontSize: 11 }}>✗未接続</span>
+                                )}
+                            </div>
+                        );
+                    })}
+                    {waypoints.length === 0 && (
+                        <div className="time-editor__note">
+                            レールを右クリック →「路線編集」→「経由点として追加」で経由点を積み上げてください。
+                            既に組み上がった経路の途中を右クリックすると、その位置に挿入されます。
+                            駅の境界点マーカーをクリックすると、自動的にその駅への出入りとして認識されます。
+                        </div>
+                    )}
+                </div>
+
+                <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                    <button className="mode-btn" onClick={onRemoveLast} disabled={waypoints.length === 0}>最後を取消</button>
+                    <button className="mode-btn" onClick={onClear} disabled={waypoints.length === 0}>クリア</button>
+                </div>
+
+                {error && (
+                    <div className="time-editor__error">
+                        経由点{error.atIndex + 1}と{error.atIndex + 2}が線路で繋がっていません
+                    </div>
+                )}
+
+                <div className="time-editor__fields">
+                    <label className="time-editor__field">
+                        <span>路線名</span>
+                        <input type="text" value={name} onChange={(e) => setName(e.target.value)} style={{ flex: 1 }} />
+                    </label>
+                    <label className="time-editor__field">
+                        <span>タグ</span>
+                        <input
+                            type="text"
+                            placeholder="カンマ区切り"
+                            value={tagsInput}
+                            onChange={(e) => setTagsInput(e.target.value)}
+                            style={{ flex: 1 }}
+                        />
+                    </label>
+                </div>
+
+                {saveStatus === 'error' && <div className="time-editor__error">{saveError}</div>}
+                {saveStatus === 'saved' && <div className="time-editor__note" style={{ color: 'var(--green)' }}>✓ 保存しました</div>}
+
+                <button
+                    className="time-editor__btn"
+                    disabled={!canSave || saveStatus === 'saving'}
+                    onClick={() => {
+                        const tags = tagsInput.split(',').map((t) => t.trim()).filter(Boolean);
+                        onSave(name.trim(), tags);
+                    }}
+                >
+                    {saveStatus === 'saving' ? '保存中...' : '路線を保存'}
+                </button>
+            </div>
+        </Window>
+    );
 }

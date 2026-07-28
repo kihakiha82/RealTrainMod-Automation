@@ -5,6 +5,9 @@ export default defineConfig({
   plugins: [
     react(),
   ],
+  define: {
+    'process.env': {},
+  },
   server: {
     // 開発時は `npm start`(ルート側)で立てたAPIサーバーにプロキシする
     proxy: {
