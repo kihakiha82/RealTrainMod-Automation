@@ -2,7 +2,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { buildRouteProfile, absoluteSToLocal } = require('../client/calc/routeProfile');
+const { buildRouteProfile, absoluteSToLocal, insertStations } = require('../client/calc/routeProfile');
 const { resolveOrderedSegments } = require('../client/calc/orderedRouteResolver');
 const { orderSegmentChain, deriveBoundaryPoints, findRailRoute } = require('../client/calc/railGraph');
 const { computeSpeedLimitProfile } = require('../client/calc/speedLimitProfile');
@@ -1228,13 +1228,17 @@ app.delete('/api/stations/:id', (req, res) => {
 
   const routes = readJsonArray(routeFilePath());
   const referencingRoutes = findRoutesReferencing(routes, req.params.id);
+  const lines = readJsonArray(lineFilePath());
+  const referencingLines = findLinesReferencingStation(lines, req.params.id);
   const force = req.query.force === 'true';
 
-  if (referencingRoutes.length > 0 && !force) {
+  if ((referencingRoutes.length > 0 || referencingLines.length > 0) && !force) {
     res.status(409).json({
-      error: 'この駅は他の路線から参照されているため削除できません。' +
-          '?force=true を付けて再度削除すると、参照している経由点を通常の経由点(駅なし)に格下げしてから削除します。',
+      error: 'この駅は他の系統・路線から参照されているため削除できません。' +
+          '?force=true を付けて再度削除すると、系統側は経由点を通常の経由点(駅なし)に格下げし、' +
+          '路線側は所属駅リストからこの駅を取り除いてから削除します。',
       referencingRoutes,
+      referencingLines,
     });
     return;
   }
@@ -1243,13 +1247,22 @@ app.delete('/api/stations/:id', (req, res) => {
     downgradeReferencingWaypoints(routes, req.params.id);
     writeJsonArray(routeFilePath(), routes);
   }
+  if (referencingLines.length > 0) {
+    downgradeReferencingLines(lines, req.params.id);
+    writeJsonArray(lineFilePath(), lines);
+  }
 
   stations.splice(idx, 1);
   writeJsonArray(stationFilePath(), stations);
-  res.json({ ok: true, id: req.params.id, downgradedRoutes: referencingRoutes.map((r) => r.routeId) });
+  res.json({
+    ok: true,
+    id: req.params.id,
+    downgradedRoutes: referencingRoutes.map((r) => r.routeId),
+    downgradedLines: referencingLines.map((l) => l.lineId),
+  });
 });
 
-// ── Route(路線) ────────────────────────────────────────────────────────
+// ── Route(系統) ────────────────────────────────────────────────────────
 //
 // route.json も station.json と同様、Web側だけが読み書きする。
 // waypointsが真実源、pathは毎回再計算できる導出値(キャッシュ)。
@@ -1419,11 +1432,141 @@ app.delete('/api/routes/:id', (req, res) => {
   const routes = readJsonArray(routeFilePath());
   const idx = routes.findIndex((r) => r.id === req.params.id);
   if (idx < 0) {
-    res.status(404).json({ error: `路線が見つかりません: ${req.params.id}` });
+    res.status(404).json({ error: `系統が見つかりません: ${req.params.id}` });
     return;
   }
   routes.splice(idx, 1);
   writeJsonArray(routeFilePath(), routes);
+  res.json({ ok: true, id: req.params.id });
+});
+
+// ── Line(路線) ────────────────────────────────────────────────────────
+//
+// 再設計仕様書1.2節: ダイヤグラムの表示・編集を行うための管理単位。列車の
+// 運転経路そのもの(系統=Route)は保持しない。所属する駅はOudia互換の
+// ダイヤグラム表示用に順序付きリストとして持ち、所属するレールは順序を
+// 持たない集合として持つ。同一の駅・レールが複数の路線に含まれることを許可する。
+// 系統(Route)とは異なり、Lineは他のどのエンティティからも参照されない
+// (Line→駅/レールの一方向のみ)ため、Line自体の削除に整合性チェックは不要。
+
+function lineFilePath() {
+  return path.join(DATA_DIR, 'line.json');
+}
+
+function findLinesReferencingStation(lines, stationId) {
+  const result = [];
+  for (const line of lines) {
+    if ((line.stationIds ?? []).includes(stationId)) {
+      result.push({ lineId: line.id, lineName: line.name });
+    }
+  }
+  return result;
+}
+
+/** 指定のstationIdを、参照している路線のstationIdsから取り除く(路線自体は残す)。 */
+function downgradeReferencingLines(lines, stationId) {
+  for (const line of lines) {
+    line.stationIds = (line.stationIds ?? []).filter((id) => id !== stationId);
+  }
+}
+
+/**
+ * LineのPOST bodyを受け取り、新規id発行・既存id維持・バリデーションを行う。
+ * @param allSegments rails-geometry.json相当の全RailSegment(railSegmentIdsの存在検証に使う)
+ * @param stations station.jsonの全Station(stationIdsの存在検証に使う)
+ */
+function buildLineFromBody(body, existing, allSegments, stations) {
+  const { name, tags, color, stationIds, railSegmentIds } = body;
+
+  if (typeof name !== 'string' || !name.trim()) {
+    return { error: 'nameは必須です' };
+  }
+  if (color !== undefined && color !== null && typeof color !== 'string') {
+    return { error: 'colorは文字列である必要があります' };
+  }
+  if (stationIds !== undefined) {
+    if (!Array.isArray(stationIds) || !stationIds.every((id) => typeof id === 'string' && id)) {
+      return { error: 'stationIdsは文字列の配列である必要があります' };
+    }
+    const stationIdSet = new Set(stations.map((s) => s.id));
+    for (let i = 0; i < stationIds.length; i++) {
+      if (!stationIdSet.has(stationIds[i])) {
+        return { error: `stationIds[${i}]: 駅が見つかりません(${stationIds[i]})` };
+      }
+    }
+  }
+  if (railSegmentIds !== undefined) {
+    if (!Array.isArray(railSegmentIds) || !railSegmentIds.every((id) => typeof id === 'string' && id)) {
+      return { error: 'railSegmentIdsは文字列の配列である必要があります' };
+    }
+    const segmentIdSet = new Set(allSegments.map((s) => s.id));
+    for (let i = 0; i < railSegmentIds.length; i++) {
+      if (!segmentIdSet.has(railSegmentIds[i])) {
+        return { error: `railSegmentIds[${i}]: レールが見つかりません(${railSegmentIds[i]})` };
+      }
+    }
+  }
+
+  const line = {
+    id: existing?.id ?? generateId('line'),
+    name: name.trim(),
+    tags: normalizeTags(tags),
+    color: color ?? existing?.color ?? null,
+    // 駅: ダイヤグラム表示順を持つ順序付きリスト。同一駅が複数回現れることも
+    // (ループ線の起終点表示など)禁止しない。
+    stationIds: stationIds ?? existing?.stationIds ?? [],
+    // レール: 順序を持たない集合。重複だけ取り除く。
+    railSegmentIds: [...new Set(railSegmentIds ?? existing?.railSegmentIds ?? [])],
+  };
+
+  return { line };
+}
+
+app.get('/api/lines', (req, res) => {
+  res.json(readJsonArray(lineFilePath()));
+});
+
+// 新規作成 or 更新(既存id指定時はupsert)
+app.post('/api/lines', (req, res) => {
+  const lines = readJsonArray(lineFilePath());
+  const existing = req.body.id ? lines.find((l) => l.id === req.body.id) : null;
+
+  const allSegments = loadMergedRails();
+  if (!allSegments) {
+    res.status(404).json({
+      error: 'rails-geometry.jsonが見つかりません',
+      path: path.join(DATA_DIR, 'rails-geometry.json'),
+    });
+    return;
+  }
+  const stations = readJsonArray(stationFilePath());
+
+  const result = buildLineFromBody(req.body, existing, allSegments, stations);
+  if (result.error) {
+    res.status(400).json({ error: result.error });
+    return;
+  }
+
+  const { line } = result;
+  const idx = lines.findIndex((l) => l.id === line.id);
+  if (idx >= 0) {
+    lines[idx] = line;
+  } else {
+    lines.push(line);
+  }
+  writeJsonArray(lineFilePath(), lines);
+  res.json(line);
+});
+
+app.delete('/api/lines/:id', (req, res) => {
+  const lines = readJsonArray(lineFilePath());
+  const idx = lines.findIndex((l) => l.id === req.params.id);
+  if (idx < 0) {
+    res.status(404).json({ error: `路線が見つかりません: ${req.params.id}` });
+    return;
+  }
+  lines.splice(idx, 1);
+  writeJsonArray(lineFilePath(), lines);
   res.json({ ok: true, id: req.params.id });
 });
 

@@ -235,3 +235,37 @@ export async function saveStation(body) {
   }
   return res.json();
 }
+
+/** 路線(Line)一覧を取得する。ダイヤグラム表示・編集単位で、運転経路(系統)は含まない。 */
+export async function fetchLines() {
+  const res = await fetch('/api/lines');
+  if (!res.ok) throw new Error(`路線一覧の取得に失敗しました (HTTP ${res.status})`);
+  return res.json();
+}
+
+/**
+ * 路線を新規作成/更新(upsert)する。既存を更新する場合はbody.idを含めること。
+ * body: { id?, name, tags?, color?, stationIds?: string[](順序付き), railSegmentIds?: string[](順不同) }
+ */
+export async function saveLine(body) {
+  const res = await fetch('/api/lines', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.error || `路線の保存に失敗しました (HTTP ${res.status})`);
+  }
+  return res.json();
+}
+
+/** 路線を削除する */
+export async function deleteLine(id) {
+  const res = await fetch(`/api/lines/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `路線の削除に失敗しました (HTTP ${res.status})`);
+  }
+  return res.json();
+}
