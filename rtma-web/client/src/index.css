@@ -252,6 +252,35 @@ body,
   left: 12px;
 }
 
+.time-editor__field input[type="date"] {
+  /* yyyy-mm-dd が綺麗に収まるよう幅を少し広げる (既存の70pxから上書き) */
+  width: 130px;
+
+  /* ブラウザ標準のポップアップカレンダーUIを強制的にダークモードにする */
+  color-scheme: dark;
+
+  cursor: pointer;
+  letter-spacing: 0.05em;
+
+  /* テキストの配置を微調整して見栄えを良くする */
+  padding-left: 8px;
+}
+
+/* 右側のカレンダーアイコン（ピッカー）の調整 (Chrome / Edge / Safari用) */
+.time-editor__field input[type="date"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.5; /* 通常時は少し暗くして --text-dim の色味に近づける */
+  transition: opacity 0.15s ease, filter 0.15s ease;
+  transform: scale(0.9); /* アイコンを少し小さくしてスタイリッシュに */
+}
+
+/* ホバー時のアイコンアクション */
+.time-editor__field input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+  /* ホバー時に既存のアクセントカラー(--amber)のような光彩をうっすら追加 */
+  filter: drop-shadow(0 0 3px rgba(232, 163, 61, 0.6));
+}
+
 /* レール右クリックメニュー(mapEngine/contextMenuSchema.js + components/ContextMenu.jsx) */
 .context-menu {
   position: fixed;

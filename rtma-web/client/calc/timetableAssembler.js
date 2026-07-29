@@ -112,6 +112,9 @@ function resolveTrackAndStop(station, trackId, stopId) {
  *     segIndexAfter: number,  この駅の停止位置の直後にあたるsegRefs中のインデックス
  *                              (= buildRouteProfile後、segmentOffsets[segIndexAfter].offsetSが
  *                              絶対sになる。segRefs.length に等しい場合は終着駅=profile.totalLength)
+ *     turnback: boolean,      4.4節: 進入(enter)ルート最終区間と進出(exit)ルート先頭区間の
+ *                              reversedが逆向きの場合true。始発駅・終着駅・通過駅は常にfalse
+ *                              (比較対象となる入口・出口の両ルートが揃わないため)。
  *   }>,
  * }}
  */
@@ -162,7 +165,7 @@ function assembleRouteTimetableSegments(route, stationPlans, stationsById, findR
         for (const r of refs) segRefs.push(r);
     }
 
-    function recordStop(plan) {
+    function recordStop(plan, turnback = false) {
         const st = station(plan.stationId);
         const { track, stop } = resolveTrackAndStop(st, plan.trackId, plan.stopId);
         if (!track || !stop) {
@@ -176,7 +179,22 @@ function assembleRouteTimetableSegments(route, stationPlans, stationsById, findR
             trackName: track.name,
             dwellTicks: plan.dwellTicks ?? 0,
             segIndexAfter: segRefs.length,
+            turnback,
         });
+    }
+
+    /**
+     * 4.4節: 折返し判定の自動導出。
+     * 直前の構内ルート(入口→停車位置)の最終区間と、直後の構内ルート(停車位置→出口)の
+     * 先頭区間のreversedを比較し、逆向きであれば折返しとみなす。
+     * 停車位置がちょうど境界点上にありどちらかのルートのpathが空になる場合は、
+     * 進行方向を判定できないため折返しとはみなさない(false)。
+     */
+    function detectTurnback(enterRoute, exitRoute) {
+        const lastEnterSeg = enterRoute.path?.[enterRoute.path.length - 1];
+        const firstExitSeg = exitRoute.path?.[0];
+        if (!lastEnterSeg || !firstExitSeg) return false;
+        return Boolean(lastEnterSeg.reversed) !== Boolean(firstExitSeg.reversed);
     }
 
     // 先頭: origin(単独waypoint = 出発境界点)。停車位置→境界点(exit系構内ルート)を先頭に追加する。
@@ -228,11 +246,11 @@ function assembleRouteTimetableSegments(route, stationPlans, stationsById, findR
                 throw new Error(`「${st.name}」: 進入境界点から指定の番線・停車位置へ至る構内ルートが見つかりません`);
             }
             pushRefs(enterRoute.path);
-            recordStop(plan);
             const exitRoute = findExitRoute(st, exitNodeKey, plan.trackId, plan.stopId);
             if (!exitRoute) {
                 throw new Error(`「${st.name}」: 指定の番線・停車位置から進出境界点へ至る構内ルートが見つかりません`);
             }
+            recordStop(plan, detectTurnback(enterRoute, exitRoute));
             pushRefs(exitRoute.path);
         }
     }

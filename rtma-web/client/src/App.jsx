@@ -13,7 +13,6 @@ export default function App() {
   const [player,         setPlayer]         = useState(null);
   const [isServerRunning,setIsServerRunning]= useState(false);
   const [status,         setStatus]         = useState('接続待機中...');
-  const [timeSnapshot,   setTimeSnapshot]   = useState(null);
   const [clockText,      setClockText]      = useState('');
   // (予測)ラベルもReact stateで管理 — TimeEditorと同じパターン
   const [isExtrapolating,setIsExtrapolating]= useState(false);
@@ -85,8 +84,7 @@ export default function App() {
   const timePollNowRef  = useRef(null);
   // (予測)への切り替えタイマー
   const extraTimerRef   = useRef(null);
-  // setInterval内のstaleクロージャを防ぐため、常に最新のtimeSnapshotをrefでも保持する
-  const timeSnapshotRef = useRef(null);
+
   const snapshotRef = useRef(null);
   //window関連
   const [showTimeEditor, setShowTimeEditor] = useState(false);
@@ -367,8 +365,7 @@ export default function App() {
 
 
 
-  // timeSnapshotRefを常に最新に保つ(setInterval内から参照するため)
-  useEffect(() => { timeSnapshotRef.current = timeSnapshot; }, [timeSnapshot]);
+
 
   // ── timeポーリング ──────────────────────────────────
   useEffect(() => {
@@ -377,25 +374,30 @@ export default function App() {
 
     const poll = async () => {
       try {
-        const timeData = await fetchTime();
-        if (cancelled) return;
+        // ★追加: サーバー停止中で、すでに時計の基準(snapshot)を持っているなら、
+        // 自分がsaveTimeした粗いデータを読み込んで上書きしてしまうのを防ぐためスキップ。
+        if (!playerStateRef.current.isServerRunning && snapshotRef.current) {
+          // 何もしない（表示は現在持っているsnapshotRefを基準になめらかに進み続ける）
+        } else {
+          const timeData = await fetchTime();
+          if (cancelled) return;
 
-        const snap = {
-          ...timeData,
-          ...playerStateRef.current,
-          fetchedAtMs: Date.now(),
-        };
+          const snap = {
+            ...timeData,
+            ...playerStateRef.current,
+            fetchedAtMs: Date.now(),
+          };
 
-        setServerSnapshot(snap);
-        snapshotRef.current = snap;
+          setServerSnapshot(snap);
+          snapshotRef.current = snap;
 
-        // 新データ受信直後は確定値 → 1秒後から(予測)に切り替え
-        setIsExtrapolating(false);
-        clearTimeout(extraTimerRef.current);
-        extraTimerRef.current = setTimeout(() => {
-          if (!cancelled) setIsExtrapolating(true);
-        }, 1000);
-
+          // 新データ受信直後は確定値 → 1秒後から(予測)に切り替え
+          setIsExtrapolating(false);
+          clearTimeout(extraTimerRef.current);
+          extraTimerRef.current = setTimeout(() => {
+            if (!cancelled) setIsExtrapolating(true);
+          }, 1000);
+        }
       } catch (e) {
         console.warn('時刻データの取得に失敗しました', e);
       } finally {
@@ -479,44 +481,35 @@ export default function App() {
 
   // ── isServerRunning=false中の予測時間自動書き戻し ──────
   // サーバーが止まっている間も補間でローカルの時計を進め続け、
-  // 30秒おきにtime.jsonへ書き戻す。次回Minecraft起動時に正確な時刻を引き継ぐため。
+  // 5秒おきにtime.jsonへ書き戻す。次回Minecraft起動時に正確な時刻を引き継ぐため。
   // (saveTimeはapi.jsからimportする想定)
   useEffect(() => {
     if (isServerRunning) return;
 
     const writeback = async () => {
-
       const snap = snapshotRef.current;
       if (!snap) return;
 
       const now = Date.now();
-
-      const full = extrapolateFullDateTime(
-          snap,
-          now
-      );
+      const full = extrapolateFullDateTime(snap, now);
 
       if (!full) return;
 
-      await saveTime({
-        year: full.year,
-        dayOfYear: full.dayOfYear,
-        hour: full.hour,
-        minute: full.minute,
-        second: full.second,
-      });
+      try {
+        await saveTime({
+          year: full.year,
+          dayOfYear: full.dayOfYear,
+          hour: full.hour,
+          minute: full.minute,
+          second: full.second,
+        });
+      } catch (e) {
+        console.warn('バックグラウンドでの時刻保存に失敗しました', e);
+      }
 
-      // ←ここでstateは触らない
-
-      snapshotRef.current = {
-        ...snap,
-        year: full.year,
-        dayOfYear: full.dayOfYear,
-        hour: full.hour,
-        minute: full.minute,
-        second: full.second,
-        fetchedAtMs: now,
-      };
+      // 【削除】ここで snapshotRef.current を上書きしていた処理を丸ごと消します。
+      // 表示用の requestAnimationFrame は、最初に取得した snapshotRef を
+      // 基準にミリ秒単位で計算し続けるため、これで完全に滑らかに繋がります。
     };
 
     // 開始時に一度保存
@@ -536,16 +529,26 @@ export default function App() {
       const snap = snapshotRef.current;
 
       if (snap) {
-        const current = extrapolateTime(snap, Date.now());
+        const current = extrapolateFullDateTime(snap, Date.now());
 
         if (current) {
           const frozen = current.frozen ? " ⏸" : "";
           const predict = !current.frozen ? " (予測)" : "";
 
+          //年と通日(dayOfYear)から「月・日・曜日」を算出する
+          const dateObj = new Date();
+
+          dateObj.setFullYear(current.year, 0, current.dayOfYear);
+
+          const y = String(dateObj.getFullYear()).padStart(4, '0');
+          const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+          const d = String(dateObj.getDate()).padStart(2, '0');
+          const week = ['日', '月', '火', '水', '木', '金', '土'][dateObj.getDay()];
+
+          const dateString = `${y}年${m}月${d}日(${week}) `;
+
           setClockText(
-              formatDateTime(current) +
-              frozen +
-              predict
+              dateString + formatDateTime(current) + frozen + predict
           );
         }
       }
@@ -715,7 +718,9 @@ export default function App() {
                   onSaved={async () => {
                     try {
                       const timeData = await fetchTime();
-                      setTimeSnapshot({ ...timeData, ...playerStateRef.current, fetchedAtMs: Date.now() });
+                      const snap = { ...timeData, ...playerStateRef.current, fetchedAtMs: Date.now() };
+                      setServerSnapshot(snap);     // 既存のpoll()と同じ更新の仕方に揃える
+                      snapshotRef.current = snap;  // ← これが抜けていたのが直接の原因
                       setIsExtrapolating(false);
                     } catch { /* 次の5秒ポーリングで更新される */ }
                   }}

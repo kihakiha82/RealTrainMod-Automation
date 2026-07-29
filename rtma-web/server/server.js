@@ -446,11 +446,20 @@ app.post('/api/calc/route-timetable', (req, res) => {
     totalLength: profile.totalLength,
     schedule,
     // 手順6の永続データモデルへ変換しやすいよう、駅計画も正規化して返す。
-    stationPlans: stationPlans.map((plan) => ({
-      ...plan,
-      handling: plan.pass ? 'pass' : 'stop',
-      turnback: plan.turnback === true,
-    })),
+    // turnback(4.4節)はここではユーザー入力を信用せず、assembleRouteTimetableSegments()が
+    // 進入・進出ルートのreversed比較から自動導出した値(assembled.stationStops)を採用する。
+    // stationPlansには通過(pass)駅も含まれるが、assembled.stationStopsは停車駅のみ(pass駅は
+    // recordStopが呼ばれない)なので、両者は同じ相対順序を保ったまま停車駅だけを消費して対応させる。
+    stationPlans: (() => {
+      let stopCursor = 0;
+      return stationPlans.map((plan) => {
+        if (plan.pass) {
+          return { ...plan, handling: 'pass', turnback: false };
+        }
+        const derived = assembled.stationStops[stopCursor++];
+        return { ...plan, handling: 'stop', turnback: derived?.turnback === true };
+      });
+    })(),
   };
 
   const badPath = findNonFiniteNumber(responseBody);
