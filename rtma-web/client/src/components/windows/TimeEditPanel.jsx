@@ -16,7 +16,7 @@ import { Window } from '../Window.jsx'; // ◀︎ 追加
 /**
  * isServerRunning=false のときだけ表示する時刻編集パネル。
  */
-export default function TimeEditPanel({ snapshot, onSaved ,onClose, zIndex, onFocus }) {
+export default function TimeEditPanel({ snapshot, onSaved ,isServerRunning ,onClose, zIndex, onFocus }) {
 
     const [year,      setYear]      = useState(snapshot?.year      ?? 1);
     const [dayOfYear, setDayOfYear] = useState(snapshot?.dayOfYear ?? 1);
@@ -86,9 +86,15 @@ export default function TimeEditPanel({ snapshot, onSaved ,onClose, zIndex, onFo
                     </label>
                 </div>
                 {error && <div className="time-editor__error">{error}</div>}
+                {isServerRunning ? (
                 <button className="time-editor__btn" onClick={handleSave} disabled={saving}>
                     {saving ? '保存中...' : '次回起動時の時刻として保存'}
                 </button>
+                ) : (
+                    <label style={{color: "var(--red)"}}>
+                    現在起動前時刻の変更はできません。
+                    </label>
+                    )}
                 <div className="time-editor__note">
                     Minecraftを起動すると、この時刻から進行を再開します。
                 </div>

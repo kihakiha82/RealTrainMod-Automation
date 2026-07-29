@@ -105,11 +105,11 @@ export default function App() {
 
   //windowを最前面に持ってくる
   const bringToFront = (windowName) => {
-    setNextZIndex(prev => prev + 1);
-    setWindowZIndices(prev => ({
-      ...prev,
-      [windowName]: nextZIndex + 1
-    }));
+    setNextZIndex(prev => {
+        const next = prev + 1;
+        setWindowZIndices(p => ({ ...p, [windowName]: next }));
+        return next;
+    });
   };
 
   /**
@@ -682,6 +682,13 @@ export default function App() {
             >
               簡易運行
             </button>
+
+            <button
+                className={`mode-btn${showTimeEditor ? ' is-active' : ''}`}
+                onClick={() => setShowTimeEditor((v) => !v)}
+            >
+              起動前時刻の変更
+            </button>
           </div>
         </header>
 
@@ -702,7 +709,7 @@ export default function App() {
               onBoundaryPointClick={handleBoundaryMarkerClick}
               ref={mapRef}
           />
-          {!isServerRunning && (
+          {showTimeEditor && (
               <TimeEditPanel
                   snapshot={serverSnapshot}
                   onSaved={async () => {
@@ -712,6 +719,7 @@ export default function App() {
                       setIsExtrapolating(false);
                     } catch { /* 次の5秒ポーリングで更新される */ }
                   }}
+                  isServerRunning={isServerRunning}
                   onClose={() => setShowTimeEditor(false)}
                   zIndex={windowZIndices.timeEditor}
                   onFocus={() => bringToFront('timeEditor')}
