@@ -7,6 +7,7 @@ import { fetchRails, fetchPlayerPosition, fetchTime, saveTime, fetchRouteProfile
 import { extrapolateTime, extrapolateFullDateTime, formatDateTime } from './timeUtils';
 import { findRailRoute } from './mapEngine/railGraph';
 import SimpleStaffPanel from "./components/windows/SimpleStaffPanel.jsx";
+import TimetableEditPanel from "./components/windows/TimetableEditPanel.jsx";
 
 export default function App() {
   const [segments,       setSegments]       = useState([]);
@@ -91,6 +92,7 @@ export default function App() {
   const [showRouteEditPanel, setShowRouteEditPanel] = useState(false);
   const [showStationEditor, setShowStationEditor] = useState(false);
   const [showSimpleStaffPanel, setShowSimpleStaffPanel] = useState(false);
+  const [showTimetableEditor, setShowTimetableEditor] = useState(false);
 
   const [nextZIndex, setNextZIndex] = useState(101);
 
@@ -692,6 +694,13 @@ export default function App() {
             >
               起動前時刻の変更
             </button>
+
+            <button
+                className={`mode-btn${showTimetableEditor ? ' is-active' : ''}`}
+                onClick={() => setShowTimetableEditor((v) => !v)}
+            >
+              🕐 時刻表
+            </button>
           </div>
         </header>
 
@@ -778,6 +787,17 @@ export default function App() {
                   onFocus={() => bringToFront('simpleStaffPanel')}
               />
           )}
+
+          {showTimetableEditor && (
+              <TimetableEditPanel
+                  stations={mapStations}
+                  trainSpecs={trainSpecs}
+                  onClose={() => setShowTimetableEditor(false)}
+                  zIndex={windowZIndices.timetableEditor}
+                  onFocus={() => bringToFront('timetableEditor')}
+              />
+          )}
+
         </main>
 
         <footer className="legend">

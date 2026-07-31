@@ -252,35 +252,6 @@ body,
   left: 12px;
 }
 
-.time-editor__field input[type="date"] {
-  /* yyyy-mm-dd が綺麗に収まるよう幅を少し広げる (既存の70pxから上書き) */
-  width: 130px;
-
-  /* ブラウザ標準のポップアップカレンダーUIを強制的にダークモードにする */
-  color-scheme: dark;
-
-  cursor: pointer;
-  letter-spacing: 0.05em;
-
-  /* テキストの配置を微調整して見栄えを良くする */
-  padding-left: 8px;
-}
-
-/* 右側のカレンダーアイコン（ピッカー）の調整 (Chrome / Edge / Safari用) */
-.time-editor__field input[type="date"]::-webkit-calendar-picker-indicator {
-  cursor: pointer;
-  opacity: 0.5; /* 通常時は少し暗くして --text-dim の色味に近づける */
-  transition: opacity 0.15s ease, filter 0.15s ease;
-  transform: scale(0.9); /* アイコンを少し小さくしてスタイリッシュに */
-}
-
-/* ホバー時のアイコンアクション */
-.time-editor__field input[type="date"]::-webkit-calendar-picker-indicator:hover {
-  opacity: 1;
-  /* ホバー時に既存のアクセントカラー(--amber)のような光彩をうっすら追加 */
-  filter: drop-shadow(0 0 3px rgba(232, 163, 61, 0.6));
-}
-
 /* レール右クリックメニュー(mapEngine/contextMenuSchema.js + components/ContextMenu.jsx) */
 .context-menu {
   position: fixed;
@@ -343,7 +314,7 @@ body,
   width: 100%;
   height: 100%;
   background: var(--panel);
-  border: 1px solid var(--amber);
+  border: 1px solid var(--line);
   border-radius: 6px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   overflow: hidden;
@@ -464,4 +435,109 @@ body,
   max-height: none;
   padding: 0;
   z-index: auto;
+}
+/* 時刻表編集パネル(TimetableEditPanel.jsx) */
+.timetable-edit__table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.timetable-edit__table th,
+.timetable-edit__table td {
+  border-bottom: 1px solid var(--line);
+  padding: 4px 6px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.timetable-edit__table th {
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+.timetable-edit__table select,
+.timetable-edit__table input {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
+.timetable-edit__kind {
+  color: var(--text-dim);
+  font-size: 10px;
+  margin-left: 6px;
+}
+
+.timetable-edit__pass {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-dim);
+}
+
+/* 結果表示テーブル: 日本の時刻表(スタフ)風に「着/駅名/発」の3行を1駅ぶんとして詰める */
+
+/* 3行1組の内側(着→駅名→発)は罫線を引かず、駅ブロックの区切りだけ線を残す */
+.timetable-edit__row--arrival td,
+.timetable-edit__row--station td {
+  border-bottom: none;
+}
+
+.timetable-edit__row--departure td {
+  border-bottom: 2px solid var(--line);
+}
+
+/* 着・発の行: ラベル列を小さく、時刻はやや控えめな色で */
+.timetable-edit__row--arrival td:first-child,
+.timetable-edit__row--departure td:first-child {
+  width: 28px;
+  color: var(--text-dim);
+  font-size: 10px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.timetable-edit__row--arrival td:nth-child(2),
+.timetable-edit__row--departure td:nth-child(2) {
+  color: var(--text-dim);
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+/* 駅名・番線の行: 主役なので太字・少し大きめ・背景を薄く強調 */
+.timetable-edit__row--station {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.timetable-edit__row--station td:first-child {
+  font-family: var(--sans);
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text);
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.timetable-edit__row--station td:nth-child(2) {
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* 折返し表示は発の行の3列目にしか出ないので、そこだけ右寄せに */
+.timetable-edit__row--departure td:last-child {
+  text-align: right;
+  font-weight: 700;
+}
+
+/* 通過駅の「レ」表示。実物のスタフ同様、時刻の代わりに目立たせる */
+.timetable-edit__pass-mark {
+  font-style: italic;
+  color: var(--select);
 }
