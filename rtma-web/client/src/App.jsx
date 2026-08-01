@@ -3,11 +3,12 @@ import Map2D from './components/Map2D';
 import TimeEditPanel from './components/windows/TimeEditPanel.jsx';
 import RouteEditPanel from './components/windows/RouteEditPanel.jsx';
 import StationEditPanel from './components/windows/StationEditPanel.jsx';
-import { fetchRails, fetchPlayerPosition, fetchTime, saveTime, fetchRouteProfile, fetchTrainSpecs,  fetchTrainAssignments, saveRoute, fetchStations } from './api';
+import { fetchRails, fetchPlayerPosition, fetchTime, saveTime, fetchRouteProfile, fetchTrainSpecs,  fetchTrainAssignments, saveRoute, fetchStations, fetchRoutes, deleteRoute } from './api';
 import { extrapolateTime, extrapolateFullDateTime, formatDateTime } from './timeUtils';
 import { findRailRoute } from './mapEngine/railGraph';
 import SimpleStaffPanel from "./components/windows/SimpleStaffPanel.jsx";
 import TimetableEditPanel from "./components/windows/TimetableEditPanel.jsx";
+import RouteManagerPanel from "./components/windows/RouteManagerPanel.jsx";
 
 export default function App() {
   const [segments,       setSegments]       = useState([]);
@@ -44,6 +45,32 @@ export default function App() {
   const [routeEditError,     setRouteEditError]     = useState(null);
   const [routeEditSaveStatus,setRouteEditSaveStatus]= useState(null); // 'saving' | 'saved' | 'error' | null
   const [routeEditSaveError, setRouteEditSaveError] = useState(null);
+
+  // 系統編集(再編集対応)。RouteManagerPanel(一覧・新規作成・削除の入口)と、
+  // RouteEditPanel(名前/タグ/経由点の実編集)を繋ぐstate。
+  const [routesList,        setRoutesList]        = useState([]);
+  const [routesLoading,     setRoutesLoading]      = useState(false);
+  const [routesLoadError,   setRoutesLoadError]    = useState(null);
+  const [editingRouteId,    setEditingRouteId]     = useState(null);
+  const [routeEditName,     setRouteEditName]      = useState('');
+  const [routeEditTagsInput,setRouteEditTagsInput] = useState('');
+
+  // trueの間だけRouteEditPanelを表示し、地図上での経由点追加(右クリック「経由点として追加」/
+  // 駅境界点マーカーのクリック)を有効にする。RouteManagerPanelの「新規作成」/「編集」を
+  // 押すとtrueになり、「クリア」(=編集セッションを閉じる)でfalseに戻る。
+  const [isRouteEditActive, setIsRouteEditActive] = useState(false);
+
+  async function refreshRoutesList() {
+    setRoutesLoading(true);
+    setRoutesLoadError(null);
+    try {
+      setRoutesList(await fetchRoutes());
+    } catch (e) {
+      setRoutesLoadError(e.message);
+    } finally {
+      setRoutesLoading(false);
+    }
+  }
 
   // 駅管理パネル(5章/4c)。右クリック「駅編集」カテゴリで拾ったrailPointを
   // StationEditPanelへpropsとして橋渡しするためのstate。
@@ -87,34 +114,45 @@ export default function App() {
   const extraTimerRef   = useRef(null);
 
   const snapshotRef = useRef(null);
+
   //window関連
   const [showTimeEditor, setShowTimeEditor] = useState(false);
   const [showRouteEditPanel, setShowRouteEditPanel] = useState(false);
   const [showStationEditor, setShowStationEditor] = useState(false);
   const [showSimpleStaffPanel, setShowSimpleStaffPanel] = useState(false);
   const [showTimetableEditor, setShowTimetableEditor] = useState(false);
+  const [showRouteManager,  setShowRouteManager]   = useState(false);
 
-  const [nextZIndex, setNextZIndex] = useState(101);
+  const [nextZIndex, setNextZIndex] = useState(150);
 
   const [windowZIndices, setWindowZIndices] = useState({
     timeEditor: 100,
     routePanel: 100,
+    routeManager: 100,
     stationPanel: 100,
     simpleStaffPanel: 100,
+    timetableEditor: 100,
   });
 
   //windowを最前面に持ってくる
   const bringToFront = (windowName) => {
     setNextZIndex(prev => {
-        const next = prev + 1;
-        setWindowZIndices(p => ({ ...p, [windowName]: next }));
-        return next;
+      const next = prev + 1;
+      setWindowZIndices(p => ({ ...p, [windowName]: next }));
+      return next;
     });
   };
 
   //サイドパネル関連
   const [leftWidth, setLeftWidth] = useState(250);
   const isDraggingRef = useRef(false);
+
+  const [showCommentEditor, setShowCommentEditor] = useState(false);
+
+  function closeAllPanels() {
+    setShowCommentEditor(false);
+
+  }
 
   const handleMouseDown = useCallback(() => {
     isDraggingRef.current = true;
@@ -166,7 +204,7 @@ export default function App() {
       return;
     }
     if (itemId === 'route-edit:add-waypoint') {
-      if (!railPoint) return;
+      if (!railPoint || !isRouteEditActive) return;
       // クリック位置が、いずれかの駅の境界点と座標的に一致するかを自動判定する
       // (4番: 系統のwaypointはtrackIdを持たず、境界点への一致だけで駅と紐付く)。
       const matchedStationId = findMatchingBoundaryStationId(railPoint);
@@ -212,11 +250,9 @@ export default function App() {
    * (findMatchingBoundaryStationIdによる座標一致判定は不要)。
    */
   function handleBoundaryMarkerClick(railPoint) {
-    if (!railPoint) return;
+    if (!railPoint || !isRouteEditActive) return;
     addRouteEditWaypoint(railPoint, railPoint.stationId ?? null);
   }
-
-
 
   /**
    * クリック位置(railPoint: {segId, s})が、mapStations(地図表示用に取得済みの駅一覧)の
@@ -251,7 +287,6 @@ export default function App() {
     setSchedule(null);
     setSaveStaffStatus(null);
   }
-
 
   /**
    * 路線編集(4a/4b)のwaypoint列から、railGraph.findRailRouteをwaypoint間で順にチェインして
@@ -317,16 +352,104 @@ export default function App() {
     setRouteEditSaveError(null);
   }
 
-  /** 路線編集: 経由点・保存状態を全てクリアする(名前・タグはRouteEditPanel内部stateなので触らない) */
+  /** 路線編集: 指定indexの経由点を1つ削除する(最後尾に限らず、途中の点も削除できる) */
+  function handleRemoveWaypointAt(index) {
+    const next = routeEditWaypoints.filter((_, i) => i !== index);
+    setRouteEditWaypoints(next);
+    recomputeRouteEditPath(next);
+    setRouteEditSaveStatus(null);
+    setRouteEditSaveError(null);
+  }
+
+  /** 路線編集: 経由点の並び順を1つ前(direction=-1)/後(direction=+1)に入れ替える */
+  function handleMoveWaypoint(index, direction) {
+    const targetIndex = index + direction;
+    if (targetIndex < 0 || targetIndex >= routeEditWaypoints.length) return;
+    const next = [...routeEditWaypoints];
+    [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+    setRouteEditWaypoints(next);
+    recomputeRouteEditPath(next);
+    setRouteEditSaveStatus(null);
+    setRouteEditSaveError(null);
+  }
+
+  /**
+   * 路線編集: 経由点・保存状態・名前/タグ・再編集中idを全てクリアし、編集セッション自体を
+   * 終了する(isRouteEditActive=false → RouteEditPanelが閉じ、地図上での経由点追加も
+   * 再び無効になる)。「クリア」(RouteEditPanelの❌/クリアボタン)から呼ばれる。
+   */
   function handleClearRouteEdit() {
     setRouteEditWaypoints([]);
     setRouteEditPath(null);
     setRouteEditError(null);
     setRouteEditSaveStatus(null);
     setRouteEditSaveError(null);
+    setEditingRouteId(null);
+    setRouteEditName('');
+    setRouteEditTagsInput('');
+    setIsRouteEditActive(false);
   }
 
-  /** 路線編集: 現在のwaypointsと、RouteEditPanelから渡された名前・タグでPOST /api/routesへ保存する */
+  /**
+   * 系統管理パネル(RouteManagerPanel)の「新規作成」ボタンから呼ばれる。
+   * 編集セッションを白紙に戻した上で、今度はisRouteEditActiveをtrueにし、
+   * 経由点0点の状態でRouteEditPanelを開く(地図上での経由点追加もここから有効になる)。
+   */
+  function handleStartNewRoute() {
+    handleClearRouteEdit();
+    setIsRouteEditActive(true);
+    bringToFront('routePanel');
+  }
+
+  /**
+   * 系統管理パネル(RouteManagerPanel)の「編集」ボタンから呼ばれる。
+   * 既存系統のwaypointsを路線編集state(routeEditWaypoints)へ読み込み、
+   * 名前・タグも復元した上でeditingRouteIdをセットする。
+   * これにより既存のRouteEditPanel(isRouteEditActiveで表示)がそのまま
+   * 「再編集モード」として機能する。
+   */
+  function handleLoadRouteForEdit(route) {
+    const waypoints = (route.waypoints ?? []).map((wp) => ({
+      segId: wp.segId,
+      s: wp.s,
+      x: wp.x,
+      z: wp.z,
+      stationId: wp.stationId ?? null,
+    }));
+    setRouteEditWaypoints(waypoints);
+    recomputeRouteEditPath(waypoints);
+    setEditingRouteId(route.id);
+    setRouteEditName(route.name ?? '');
+    setRouteEditTagsInput((route.tags ?? []).join(', '));
+    setRouteEditSaveStatus(null);
+    setRouteEditSaveError(null);
+    setIsRouteEditActive(true);
+    bringToFront('routePanel');
+  }
+
+  /**
+   * 系統管理パネルの「削除」ボタンから呼ばれる。deleteRoute()の結果(409競合の場合は
+   * { conflict: true, referencingTimetables }、成功時は{ conflict: false, ... })を
+   * そのまま呼び出し元(RouteManagerPanel)に返し、競合時のUI(強制削除の確認)は
+   * RouteManagerPanel側の責務とする(StationEditPanelのdeleteConflict stateと同じ形)。
+   * 編集中だった系統が実際に削除された場合は、編集stateもクリアする。
+   */
+  async function handleDeleteRouteFromManager(id, { force = false } = {}) {
+    const result = await deleteRoute(id, { force });
+    if (result.conflict) return result;
+    if (id === editingRouteId) {
+      handleClearRouteEdit();
+    }
+    await refreshRoutesList();
+    return result;
+  }
+
+  /**
+   * 路線編集: 現在のwaypointsと、RouteEditPanelから渡された名前・タグでPOST /api/routesへ保存する。
+   * editingRouteIdがセットされていれば、そのidをbodyに含めてupsert(=既存を上書き更新)にする。
+   * 保存が成功したら、返ってきたidをeditingRouteIdへ反映する(新規作成直後でも、以降の
+   * 「保存」ボタンは同じ系統の更新になり、押すたびに重複作成されることを防ぐ)。
+   */
   async function handleSaveRouteEdit(name, tags) {
     if (!name.trim() || routeEditWaypoints.length < 2) return;
     setRouteEditSaveStatus('saving');
@@ -339,8 +462,15 @@ export default function App() {
         z: wp.z,
         stationId: wp.stationId ?? null,
       }));
-      await saveRoute({ name: name.trim(), tags, waypoints: waypointsPayload });
+      const saved = await saveRoute({
+        id: editingRouteId ?? undefined,
+        name: name.trim(),
+        tags,
+        waypoints: waypointsPayload,
+      });
+      setEditingRouteId(saved.id);
       setRouteEditSaveStatus('saved');
+      await refreshRoutesList();
     } catch (e) {
       setRouteEditSaveStatus('error');
       setRouteEditSaveError(e.message);
@@ -388,14 +518,6 @@ export default function App() {
       setIsComputingRoute(false);
     }
   }
-
-
-
-
-
-
-
-
 
 
   // ── timeポーリング ──────────────────────────────────
@@ -638,6 +760,11 @@ export default function App() {
     refreshMapStations();
   }, []);
 
+  // ── 系統(Route)一覧(系統編集パネルの一覧表示用)。1回だけ取得し、
+  // 以後は保存・削除のたびにrefreshRoutesList呼び出しで更新する ──
+  useEffect(() => {
+    refreshRoutesList();
+  }, []);
 
   // ── 車両データ(trainspecs)の取得。簡易スタフの車両選択に使う。1回だけでよい ──
   useEffect(() => {
@@ -730,6 +857,13 @@ export default function App() {
             >
               🕐 時刻表
             </button>
+
+            <button
+                className={`mode-btn${showRouteManager ? ' is-active' : ''}`}
+                onClick={() => setShowRouteManager((v) => !v)}
+            >
+              🛤 系統編集
+            </button>
           </div>
         </header>
 
@@ -738,10 +872,27 @@ export default function App() {
             <div className="tree-panel">
               <div
                   className={`tree-item ${activeView === 'map' ? 'is-selected' : ''}`}
-                  onClick={() => setActiveView('map')}
+                  onClick={() => {
+                    closeAllPanels()
+                    setActiveView('map')
+                  }
+                  }
               >
                 <span className="tree-icon">📍</span> 路線図
               </div>
+              <details open>
+                <summary><span className="tree-icon">🛤️</span> 系統</summary>
+                <div className="tree-children">
+                  <div
+                      className={`tree-item ${activeView === 'route' ? 'is-selected' : ''}`}
+                      onClick={() => setShowRouteManager((v) => !v)}
+                  >
+                    <span className="tree-icon"></span> 系統一覧
+                  </div>
+
+                </div>
+
+              </details>
               <details open>
                 <summary><span className="tree-icon">📁</span> 路線</summary>
                 <div className="tree-children">
@@ -770,20 +921,22 @@ export default function App() {
 
               <div
                   className={`tree-item ${activeView === 'comment' ? 'is-selected' : ''}`}
-                  onClick={() => setActiveView('comment')}
+                  onClick={() => {
+                    closeAllPanels()
+                    setShowCommentEditor(true)
+                    setActiveView('comment')
+                  }
+              }
               >
                 <span className="tree-icon">💬</span> コメント
               </div>
             </div>
-            </div>
+          </div>
 
           <div className="resizer" onMouseDown={handleMouseDown} />
 
-          <main className="screen">
-            <div
-                className="map-root"
-                style={{ display: activeView === 'map' ? 'block' : 'none' }}
-            >
+          <main className="screen" style={{ position: 'relative' }}>
+            <div className="map-root">
               <Map2D
                   segments={segments}
                   player={player}
@@ -798,20 +951,22 @@ export default function App() {
                   onContextMenuAction={handleRailContextMenuAction}
                   onRoutePointChange={handleRoutePointDrag}
                   onBoundaryPointClick={handleBoundaryMarkerClick}
+                  routeEditActive={isRouteEditActive}
                   ref={mapRef}
               />
             </div>
 
 
-            {activeView === "comment" && (
-              <div className="null-root">
-                まだ何もありません
-                <div>
-                  駅を作る<br/>
-                  系統を作る<br/>
-                  時刻表を作る
+            {showCommentEditor && (
+                <div className="null-root" style={{position: 'absolute'}}>
+                  まだ何もありません
+                  <div>
+                    駅を作る<br/>
+                    系統を作る<br/>
+                    時刻表を作る
+                  </div>
                 </div>
-              </div>)}
+            )}
 
 
 
@@ -833,13 +988,35 @@ export default function App() {
                     onFocus={() => bringToFront('timeEditor')}
                 />
             )}
-            {routeEditWaypoints.length > 0 && (
+            {showRouteManager && (
+                <RouteManagerPanel
+                    routes={routesList}
+                    editingRouteId={editingRouteId}
+                    isLoading={routesLoading}
+                    loadError={routesLoadError}
+                    onRefresh={refreshRoutesList}
+                    onNew={handleStartNewRoute}
+                    onEdit={handleLoadRouteForEdit}
+                    onDelete={handleDeleteRouteFromManager}
+                    onClose={() => setShowRouteManager(false)}
+                    zIndex={windowZIndices.routeManager}
+                    onFocus={() => bringToFront('routeManager')}
+                />
+            )}
+            {isRouteEditActive && (
                 <RouteEditPanel
                     waypoints={routeEditWaypoints}
                     error={routeEditError}
                     saveStatus={routeEditSaveStatus}
                     saveError={routeEditSaveError}
+                    name={routeEditName}
+                    tagsInput={routeEditTagsInput}
+                    onNameChange={setRouteEditName}
+                    onTagsInputChange={setRouteEditTagsInput}
+                    isEditing={editingRouteId != null}
                     onRemoveLast={handleRemoveLastWaypoint}
+                    onRemoveAt={handleRemoveWaypointAt}
+                    onMove={handleMoveWaypoint}
                     onClear={handleClearRouteEdit}
                     onSave={handleSaveRouteEdit}
                     onDetach={handleDetachStation}

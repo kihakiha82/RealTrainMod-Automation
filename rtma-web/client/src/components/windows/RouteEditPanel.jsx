@@ -20,22 +20,30 @@ import { fetchStations } from '../../api.js';
  *   saveStatus: 'saving' | 'saved' | 'error' | null(路線保存自体の状態)
  *   saveError: string | null
  *   onRemoveLast: () => void
+ *   onRemoveAt: (index: number) => void(経路途中の任意の経由点を削除する)
+ *   onMove: (index: number, direction: -1 | 1) => void(経由点の並び順を1つ前/後に入れ替える)
  *   onClear: () => void
  *   onSave: (name: string, tags: string[]) => void
  *   onDetach: (index: number) => void(手動でstationIdの紐付けを解除する)
+ *
+ * 【系統編集(再編集対応)】name/tagsInputはApp.jsx側(routeEditName/routeEditTagsInput)に
+ * 状態を持ち上げ、このコンポーネントは制御コンポーネントとして扱う(以前は内部stateだった)。
+ * これはRouteManagerPanelから既存系統を読み込んだ際に、その名前・タグをこのパネルへ
+ * 反映させる必要があるため。isEditingがtrueの間は再編集中であることをタイトルに表示する。
+ *   name: string / onNameChange: (v: string) => void
+ *   tagsInput: string / onTagsInputChange: (v: string) => void
+ *   isEditing: boolean(既存系統を編集中かどうか。falseなら新規作成)
  */
 
 import { Window } from '../Window.jsx';
 export default function RouteEditPanel({
                                            waypoints, error, saveStatus, saveError,
-                                           onRemoveLast, onClear, onSave, onDetach, zIndex, onFocus
+                                           name, tagsInput, onNameChange, onTagsInputChange, isEditing,
+                                           onRemoveLast, onRemoveAt, onMove, onClear, onSave, onDetach, zIndex, onFocus
                                        }) {
 
     const [stations, setStations] = useState([]);
     const [stationsError, setStationsError] = useState(null);
-
-    const [name, setName] = useState('');
-    const [tagsInput, setTagsInput] = useState('');
 
     // 駅名の表示用に一覧を取得する(境界点タイプの表示にも使う)。
     useEffect(() => {
@@ -60,9 +68,11 @@ export default function RouteEditPanel({
     const canSave = waypoints.length >= 2 && !error && name.trim();
 
 
+    const titleSuffix = isEditing ? `再編集中: ${name || '(無題)'}` : `新規作成・経由点${waypoints.length}点`;
+
     return (
         <Window
-            title={`🛤 路線編集(経由点${waypoints.length}点)`}
+            title={`🛤 路線編集(${titleSuffix})`}
             defaultPos={{ x: 20, y: 80, width: 340, height: 450 }}
             onClose={onClear}
             zIndex={zIndex}
@@ -84,12 +94,29 @@ export default function RouteEditPanel({
                                 <span style={{ flex: 1 }}>
                   {stationInfo ? `${stationInfo.name}(境界点・${stationInfo.typeLabel})` : '経由点'}
                 </span>
-                                {stationInfo && (
-                                    <button className="mode-btn" onClick={() => onDetach(index)}>解除</button>
-                                )}
                                 {index < waypoints.length - 1 && error?.atIndex === index && (
                                     <span style={{ color: 'var(--red)', fontSize: 11 }}>✗未接続</span>
                                 )}
+                                <button
+                                    className="mode-btn" style={{ padding: '2px 6px' }}
+                                    disabled={index === 0}
+                                    title="1つ前に移動"
+                                    onClick={() => onMove(index, -1)}
+                                >↑</button>
+                                <button
+                                    className="mode-btn" style={{ padding: '2px 6px' }}
+                                    disabled={index === waypoints.length - 1}
+                                    title="1つ後に移動"
+                                    onClick={() => onMove(index, 1)}
+                                >↓</button>
+                                {stationInfo && (
+                                    <button className="mode-btn" onClick={() => onDetach(index)}>解除</button>
+                                )}
+                                <button
+                                    className="mode-btn" style={{ color: 'var(--red)' }}
+                                    title="この経由点を削除"
+                                    onClick={() => onRemoveAt(index)}
+                                >削除</button>
                             </div>
                         );
                     })}
@@ -116,7 +143,7 @@ export default function RouteEditPanel({
                 <div className="time-editor__fields">
                     <label className="time-editor__field">
                         <span>路線名</span>
-                        <input type="text" value={name} onChange={(e) => setName(e.target.value)} style={{ flex: 1 }} />
+                        <input type="text" value={name} onChange={(e) => onNameChange(e.target.value)} style={{ flex: 1 }} />
                     </label>
                     <label className="time-editor__field">
                         <span>タグ</span>
@@ -124,7 +151,7 @@ export default function RouteEditPanel({
                             type="text"
                             placeholder="カンマ区切り"
                             value={tagsInput}
-                            onChange={(e) => setTagsInput(e.target.value)}
+                            onChange={(e) => onTagsInputChange(e.target.value)}
                             style={{ flex: 1 }}
                         />
                     </label>

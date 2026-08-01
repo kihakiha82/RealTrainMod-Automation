@@ -1437,6 +1437,40 @@ app.post('/api/routes', (req, res) => {
   res.json(route);
 });
 
+/**
+ * routeIdを参照している時刻表(timetables/*.json)を列挙する(系統削除時の整合性チェック用)。
+ * 駅削除時のfindRoutesReferencing()と同じ考え方だが、こちらは「格下げ」できる余地がない
+ * (時刻表にとってrouteIdは必須の参照先であり、nullにしても意味を持つデータにならない)ため、
+ * 削除側(force時)は該当する時刻表ごと削除する方式を採る(4.4節と同様、呼び出し側で判断する)。
+ * @param {string} routeId
+ * @returns {Array<{ name: string }>}
+ */
+function findTimetablesReferencingRoute(routeId) {
+  const dir = path.join(DATA_DIR, 'timetables');
+  let files;
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  const result = [];
+  for (const file of files) {
+    try {
+      const body = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf-8'));
+      if (body && body.routeId === routeId) {
+        result.push({ name: file.replace(/\.json$/, '') });
+      }
+    } catch {
+      // 壊れた/形式の異なるファイルは無視する
+    }
+  }
+  return result;
+}
+
+// 系統の削除。他の時刻表から参照されている場合は、デフォルトでは409を返しブロックする
+// (駅削除と同じ「警告付き強制削除」方式)。ただし時刻表にとってrouteIdは必須の参照先で
+// あり、駅の場合のようにnullへ格下げできる余地がないため、?force=true を付けた場合は
+// 参照している時刻表ごと削除する。
 app.delete('/api/routes/:id', (req, res) => {
   const routes = readJsonArray(routeFilePath());
   const idx = routes.findIndex((r) => r.id === req.params.id);
@@ -1444,9 +1478,38 @@ app.delete('/api/routes/:id', (req, res) => {
     res.status(404).json({ error: `系統が見つかりません: ${req.params.id}` });
     return;
   }
+
+  const referencingTimetables = findTimetablesReferencingRoute(req.params.id);
+  const force = req.query.force === 'true';
+
+  if (referencingTimetables.length > 0 && !force) {
+    res.status(409).json({
+      error: 'この系統は他の時刻表から参照されているため削除できません。' +
+          '?force=true を付けて再度削除すると、参照している時刻表ごと削除します。',
+      referencingTimetables,
+    });
+    return;
+  }
+
+  if (referencingTimetables.length > 0) {
+    const dir = path.join(DATA_DIR, 'timetables');
+    for (const { name } of referencingTimetables) {
+      const safeName = String(name).replace(/[^a-zA-Z0-9_\-]/g, '');
+      try {
+        fs.unlinkSync(path.join(dir, `${safeName}.json`));
+      } catch {
+        // 既に無い場合は無視
+      }
+    }
+  }
+
   routes.splice(idx, 1);
   writeJsonArray(routeFilePath(), routes);
-  res.json({ ok: true, id: req.params.id });
+  res.json({
+    ok: true,
+    id: req.params.id,
+    deletedTimetables: referencingTimetables.map((t) => t.name),
+  });
 });
 
 // ── Line(路線) ────────────────────────────────────────────────────────

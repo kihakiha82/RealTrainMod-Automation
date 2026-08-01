@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { createMap2DController } from '../mapEngine/map2dController';
 import { RAIL_CONTEXT_MENU_SCHEMA } from '../mapEngine/contextMenuSchema';
 import ContextMenu from './ContextMenu';
@@ -27,9 +27,13 @@ import ContextMenu from './ContextMenu';
  * onBoundaryPointClick: 駅の境界点マーカーをクリックした時に呼ばれる
  *   (({ segId, s, x, z, stationId, boundaryType }) => void)。系統作成時の
  *   waypoint追加(始点/終点/経由点)にそのまま使える形で渡ってくる。
+ * routeEditActive: 系統編集(RouteEditPanel)が開いている(=新規作成中/再編集中)かどうか。
+ *   trueの間だけ、右クリックメニューの「経由点として追加」を有効化する
+ *   (falseの間はメニュー項目自体をグレーアウトし、クリックしても何も起きないようにする。
+ *   境界点マーカークリックのガードはApp.jsx#handleBoundaryMarkerClick側で行う)。
  */
 const Map2D = forwardRef(function Map2D(
-    { segments, player, selectedIds, routePath, routeEditPath, routeWaypoints, stations, routeStart, routeEnd, onSelectionChange, onContextMenuAction, onRoutePointChange, onBoundaryPointClick },
+    { segments, player, selectedIds, routePath, routeEditPath, routeWaypoints, stations, routeStart, routeEnd, onSelectionChange, onContextMenuAction, onRoutePointChange, onBoundaryPointClick, routeEditActive },
     ref
 ) {
   const containerRef = useRef(null);
@@ -47,6 +51,24 @@ const Map2D = forwardRef(function Map2D(
 
   // 右クリックメニューの開閉状態。{ x, y, targetIds, railPoint } | null
   const [contextMenu, setContextMenu] = useState(null);
+
+  // 「経由点として追加」は系統編集パネルが開いている間だけ有効にする。
+  // スキーマ自体はcontextMenuSchema.js側の静的データを使い回し、この項目だけ
+  // disabled/labelを上書きしたコピーを都度組み立てる(項目数が少ないので毎回作っても軽い)。
+  const contextMenuSchema = useMemo(() => {
+    if (routeEditActive) return RAIL_CONTEXT_MENU_SCHEMA;
+    return RAIL_CONTEXT_MENU_SCHEMA.map((item) => {
+      if (item.id !== 'route-edit') return item;
+      return {
+        ...item,
+        children: item.children.map((child) => (
+            child.id === 'route-edit:add-waypoint'
+                ? { ...child, label: '経由点として追加(要:系統編集を開く)', disabled: true }
+                : child
+        )),
+      };
+    });
+  }, [routeEditActive]);
 
   useEffect(() => {
     if (!containerRef.current) return undefined;
@@ -113,7 +135,7 @@ const Map2D = forwardRef(function Map2D(
             <ContextMenu
                 x={contextMenu.x}
                 y={contextMenu.y}
-                schema={RAIL_CONTEXT_MENU_SCHEMA}
+                schema={contextMenuSchema}
                 onAction={(itemId) => onContextMenuActionRef.current?.(itemId, contextMenu.targetIds, contextMenu.railPoint)}
                 onClose={() => setContextMenu(null)}
             />

@@ -55,47 +55,54 @@ export default function ContextMenu({ x, y, schema, onAction, onClose }) {
   }, [onClose]);
 
   return (
-    <div
-      ref={rootRef}
-      className="context-menu"
-      style={{ left: pos.left, top: pos.top, visibility: pos.ready ? 'visible' : 'hidden' }}
-    >
-      <ContextMenuList items={schema} onAction={onAction} onClose={onClose} />
-    </div>
+      <div
+          ref={rootRef}
+          className="context-menu"
+          style={{ left: pos.left, top: pos.top, visibility: pos.ready ? 'visible' : 'hidden' }}
+      >
+        <ContextMenuList items={schema} onAction={onAction} onClose={onClose} />
+      </div>
   );
 }
 
-/** メニュー1階層分。子を持つ項目はホバーでサブメニューをフライアウト表示する */
+/**
+ * メニュー1階層分。子を持つ項目はホバーでサブメニューをフライアウト表示する。
+ * item.disabled === trueの項目はクリックしても何も起きない(見た目も薄く表示する)。
+ * 例: 系統編集パネルが開いていない間の「経由点として追加」(App.jsx側でschemaを
+ * 動的に組み立てて渡す。このコンポーネント自体はdisabledの意味を知らず、ただ従うだけ)。
+ */
 function ContextMenuList({ items, onAction, onClose }) {
   const [openId, setOpenId] = useState(null);
 
   return (
-    <div className="context-menu__list">
-      {items.map((item) => {
-        const hasChildren = Array.isArray(item.children) && item.children.length > 0;
-        return (
-          <div
-            key={item.id}
-            className={
-              'context-menu__item' + (hasChildren ? ' context-menu__item--parent' : '')
-            }
-            onMouseEnter={() => setOpenId(item.id)}
-            onClick={() => {
-              if (hasChildren) return; // 親項目はホバーでサブメニューを開くのみで、クリックでは実行されない
-              onAction(item.id);
-              onClose();
-            }}
-          >
-            <span className="context-menu__label">{item.label}</span>
-            {hasChildren && <span className="context-menu__arrow">▶</span>}
-            {hasChildren && openId === item.id && (
-              <div className="context-menu__submenu">
-                <ContextMenuList items={item.children} onAction={onAction} onClose={onClose} />
+      <div className="context-menu__list">
+        {items.map((item) => {
+          const hasChildren = Array.isArray(item.children) && item.children.length > 0;
+          return (
+              <div
+                  key={item.id}
+                  className={
+                      'context-menu__item'
+                      + (hasChildren ? ' context-menu__item--parent' : '')
+                      + (item.disabled ? ' context-menu__item--disabled' : '')
+                  }
+                  onMouseEnter={() => setOpenId(item.id)}
+                  onClick={() => {
+                    if (hasChildren || item.disabled) return; // 親項目はホバーでサブメニューを開くのみで、クリックでは実行されない
+                    onAction(item.id);
+                    onClose();
+                  }}
+              >
+                <span className="context-menu__label">{item.label}</span>
+                {hasChildren && <span className="context-menu__arrow">▶</span>}
+                {hasChildren && openId === item.id && (
+                    <div className="context-menu__submenu">
+                      <ContextMenuList items={item.children} onAction={onAction} onClose={onClose} />
+                    </div>
+                )}
               </div>
-            )}
-          </div>
-        );
-      })}
-    </div>
+          );
+        })}
+      </div>
   );
 }

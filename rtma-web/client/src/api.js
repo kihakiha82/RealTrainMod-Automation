@@ -185,13 +185,22 @@ export async function saveRoute(body) {
 }
 
 /** 路線を削除する */
-export async function deleteRoute(id) {
-  const res = await fetch(`/api/routes/${encodeURIComponent(id)}`, { method: 'DELETE' });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `路線の削除に失敗しました (HTTP ${res.status})`);
+/**
+ * 系統を削除する。他の時刻表から参照されている場合はデフォルトでは409を返す
+ * (deleteStationと同じ「警告付き強制削除」パターン)。
+ * 戻り値: { conflict: true, referencingTimetables } | { conflict: false, ok, id, deletedTimetables }
+ */
+export async function deleteRoute(id, { force = false } = {}) {
+  const url = `/api/routes/${encodeURIComponent(id)}${force ? '?force=true' : ''}`;
+  const res = await fetch(url, { method: 'DELETE' });
+  const body = await res.json().catch(() => ({}));
+  if (res.status === 409) {
+    return { conflict: true, referencingTimetables: body.referencingTimetables ?? [] };
   }
-  return res.json();
+  if (!res.ok) {
+    throw new Error(body.error || `系統の削除に失敗しました (HTTP ${res.status})`);
+  }
+  return { conflict: false, ...body };
 }
 
 /** 駅(Station)一覧を取得する(路線編集時の駅アタッチ機能で使う想定) */
