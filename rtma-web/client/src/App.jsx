@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import Map2D from './components/Map2D';
 import TimeEditPanel from './components/windows/TimeEditPanel.jsx';
 import RouteEditPanel from './components/windows/RouteEditPanel.jsx';
@@ -111,6 +111,35 @@ export default function App() {
         return next;
     });
   };
+
+  //サイドパネル関連
+  const [leftWidth, setLeftWidth] = useState(250);
+  const isDraggingRef = useRef(false);
+
+  const handleMouseDown = useCallback(() => {
+    isDraggingRef.current = true;
+    document.body.style.cursor = 'col-resize'; // カーソルをリサイズ用に変更
+
+    // ウィンドウ全体でイベントをリッスンする
+    const handleMouseMove = (e) => {
+      if (!isDraggingRef.current) return;
+      // 最小100px、最大500pxの範囲でリサイズ
+      const newWidth = Math.max(100, Math.min(e.clientX, 500));
+      setLeftWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      isDraggingRef.current = false;
+      document.body.style.cursor = 'default';
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  }, []);
+  //現在の右画面表示
+  const [activeView, setActiveView] = useState('map');
 
   /**
    * レール右クリックメニューの項目が実行された時に呼ばれる。
@@ -704,115 +733,183 @@ export default function App() {
           </div>
         </header>
 
-        <main className="map-root">
-          <Map2D
-              segments={segments}
-              player={player}
-              selectedIds={selectedIds}
-              routePath={routePath}
-              routeEditPath={routeEditPath}
-              routeWaypoints={routeEditWaypoints}
-              stations={mapStations}
-              routeStart={routeStart}
-              routeEnd={routeEnd}
-              onSelectionChange={setSelectedIds}
-              onContextMenuAction={handleRailContextMenuAction}
-              onRoutePointChange={handleRoutePointDrag}
-              onBoundaryPointClick={handleBoundaryMarkerClick}
-              ref={mapRef}
-          />
-          {showTimeEditor && (
-              <TimeEditPanel
-                  snapshot={serverSnapshot}
-                  onSaved={async () => {
-                    try {
-                      const timeData = await fetchTime();
-                      const snap = { ...timeData, ...playerStateRef.current, fetchedAtMs: Date.now() };
-                      setServerSnapshot(snap);     // 既存のpoll()と同じ更新の仕方に揃える
-                      snapshotRef.current = snap;  // ← これが抜けていたのが直接の原因
-                      setIsExtrapolating(false);
-                    } catch { /* 次の5秒ポーリングで更新される */ }
-                  }}
-                  isServerRunning={isServerRunning}
-                  onClose={() => setShowTimeEditor(false)}
-                  zIndex={windowZIndices.timeEditor}
-                  onFocus={() => bringToFront('timeEditor')}
-              />
-          )}
-          {routeEditWaypoints.length > 0 && (
-              <RouteEditPanel
-                  waypoints={routeEditWaypoints}
-                  error={routeEditError}
-                  saveStatus={routeEditSaveStatus}
-                  saveError={routeEditSaveError}
-                  onRemoveLast={handleRemoveLastWaypoint}
-                  onClear={handleClearRouteEdit}
-                  onSave={handleSaveRouteEdit}
-                  onDetach={handleDetachStation}
-                  onStationsChanged={refreshMapStations}
-                  zIndex={windowZIndices.routePanel}
-                  onFocus={() => bringToFront('routePanel')}
-              />
-          )}
-          {showStationEditPanel && (
-              <StationEditPanel
+        <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+          <div className="side-panel" style={{ width: leftWidth }}>
+            <div className="tree-panel">
+              <div
+                  className={`tree-item ${activeView === 'map' ? 'is-selected' : ''}`}
+                  onClick={() => setActiveView('map')}
+              >
+                <span className="tree-icon">📍</span> 路線図
+              </div>
+              <details open>
+                <summary><span className="tree-icon">📁</span> 路線</summary>
+                <div className="tree-children">
+                  <div className="tree-item"><span className="tree-icon">🚉</span> 駅</div>
+                  <div className="tree-item"><span className="tree-icon">🚆</span> 列車種別</div>
+                </div>
+              </details>
+
+              <details open>
+                <summary><span className="tree-icon">📅</span> ダイヤ</summary>
+                <div className="tree-children">
+                  <details open>
+                    <summary><span className="tree-icon">📄</span> 砂野線</summary>
+                    <div className="tree-children">
+                      <div className="tree-item"><span className="tree-icon">🕒</span> 下り時刻表</div>
+                      <div className="tree-item"><span className="tree-icon">🕒</span> 上り時刻表</div>
+                      <div className="tree-item"><span className="tree-icon">📉</span> ダイヤグラム</div>
+                      <div className="tree-item"><span className="tree-icon">🕒</span> 下りカスタマイズ時刻表</div>
+                      <div className="tree-item"><span className="tree-icon">🕒</span> 上りカスタマイズ時刻表</div>
+                      <div className="tree-item"><span className="tree-icon">🚉</span> 駅時刻表</div>
+                      <div className="tree-item"><span className="tree-icon">📋</span> 運用一覧表</div>
+                    </div>
+                  </details>
+                </div>
+              </details>
+
+              <div
+                  className={`tree-item ${activeView === 'comment' ? 'is-selected' : ''}`}
+                  onClick={() => setActiveView('comment')}
+              >
+                <span className="tree-icon">💬</span> コメント
+              </div>
+            </div>
+            </div>
+
+          <div className="resizer" onMouseDown={handleMouseDown} />
+
+          <main className="screen">
+            <div
+                className="map-root"
+                style={{ display: activeView === 'map' ? 'block' : 'none' }}
+            >
+              <Map2D
                   segments={segments}
+                  player={player}
                   selectedIds={selectedIds}
-                  trainSpecs={trainSpecs}
-                  pendingStopPoint={pendingStopPoint}
-                  onConsumeStopPoint={() => setPendingStopPoint(null)}
-                  onClose={() => setShowStationEditPanel(false)}
-                  onStationsChanged={refreshMapStations}
-                  zIndex={windowZIndices.stationPanel}
-                  onFocus={() => bringToFront('stationPanel')}
-              />
-          )}
-
-          {showSimpleStaffPanel && (
-              <SimpleStaffPanel
-                  segments={segments}            // 経路計算用
-                  trains={trains}                // 列車一覧
-                  routeStart={routeStart}   // App.jsx側で管理している始点
-                  routeEnd={routeEnd}       // App.jsx側で管理している終点
-                  onClearRoute={() => {
-                    setRouteStart(null);
-                    setRouteEnd(null);
-                    setRoutePath(null);
-                  }}
                   routePath={routePath}
-                  trainSpecs={trainSpecs}
-                  setRoutePath={(route) => setRoutePath(route)}
-                  onClose={() => setShowSimpleStaffPanel(false)}
-                  zIndex={windowZIndices.simpleStaffPanel}
-                  onFocus={() => bringToFront('simpleStaffPanel')}
-              />
-          )}
-
-          {showTimetableEditor && (
-              <TimetableEditPanel
+                  routeEditPath={routeEditPath}
+                  routeWaypoints={routeEditWaypoints}
                   stations={mapStations}
-                  trainSpecs={trainSpecs}
-                  onClose={() => setShowTimetableEditor(false)}
-                  zIndex={windowZIndices.timetableEditor}
-                  onFocus={() => bringToFront('timetableEditor')}
+                  routeStart={routeStart}
+                  routeEnd={routeEnd}
+                  onSelectionChange={setSelectedIds}
+                  onContextMenuAction={handleRailContextMenuAction}
+                  onRoutePointChange={handleRoutePointDrag}
+                  onBoundaryPointClick={handleBoundaryMarkerClick}
+                  ref={mapRef}
               />
-          )}
+            </div>
 
-        </main>
+
+            {activeView === "comment" && (
+              <div className="null-root">
+                まだ何もありません
+                <div>
+                  駅を作る<br/>
+                  系統を作る<br/>
+                  時刻表を作る
+                </div>
+              </div>)}
+
+
+
+            {showTimeEditor && (
+                <TimeEditPanel
+                    snapshot={serverSnapshot}
+                    onSaved={async () => {
+                      try {
+                        const timeData = await fetchTime();
+                        const snap = { ...timeData, ...playerStateRef.current, fetchedAtMs: Date.now() };
+                        setServerSnapshot(snap);     // 既存のpoll()と同じ更新の仕方に揃える
+                        snapshotRef.current = snap;  // ← これが抜けていたのが直接の原因
+                        setIsExtrapolating(false);
+                      } catch { /* 次の5秒ポーリングで更新される */ }
+                    }}
+                    isServerRunning={isServerRunning}
+                    onClose={() => setShowTimeEditor(false)}
+                    zIndex={windowZIndices.timeEditor}
+                    onFocus={() => bringToFront('timeEditor')}
+                />
+            )}
+            {routeEditWaypoints.length > 0 && (
+                <RouteEditPanel
+                    waypoints={routeEditWaypoints}
+                    error={routeEditError}
+                    saveStatus={routeEditSaveStatus}
+                    saveError={routeEditSaveError}
+                    onRemoveLast={handleRemoveLastWaypoint}
+                    onClear={handleClearRouteEdit}
+                    onSave={handleSaveRouteEdit}
+                    onDetach={handleDetachStation}
+                    onStationsChanged={refreshMapStations}
+                    zIndex={windowZIndices.routePanel}
+                    onFocus={() => bringToFront('routePanel')}
+                />
+            )}
+            {showStationEditPanel && (
+                <StationEditPanel
+                    segments={segments}
+                    selectedIds={selectedIds}
+                    trainSpecs={trainSpecs}
+                    pendingStopPoint={pendingStopPoint}
+                    onConsumeStopPoint={() => setPendingStopPoint(null)}
+                    onClose={() => setShowStationEditPanel(false)}
+                    onStationsChanged={refreshMapStations}
+                    zIndex={windowZIndices.stationPanel}
+                    onFocus={() => bringToFront('stationPanel')}
+                />
+            )}
+
+            {showSimpleStaffPanel && (
+                <SimpleStaffPanel
+                    segments={segments}            // 経路計算用
+                    trains={trains}                // 列車一覧
+                    routeStart={routeStart}   // App.jsx側で管理している始点
+                    routeEnd={routeEnd}       // App.jsx側で管理している終点
+                    onClearRoute={() => {
+                      setRouteStart(null);
+                      setRouteEnd(null);
+                      setRoutePath(null);
+                    }}
+                    routePath={routePath}
+                    trainSpecs={trainSpecs}
+                    setRoutePath={(route) => setRoutePath(route)}
+                    onClose={() => setShowSimpleStaffPanel(false)}
+                    zIndex={windowZIndices.simpleStaffPanel}
+                    onFocus={() => bringToFront('simpleStaffPanel')}
+                />
+            )}
+
+            {showTimetableEditor && (
+                <TimetableEditPanel
+                    stations={mapStations}
+                    trainSpecs={trainSpecs}
+                    onClose={() => setShowTimetableEditor(false)}
+                    zIndex={windowZIndices.timetableEditor}
+                    onFocus={() => bringToFront('timetableEditor')}
+                />
+            )}
+
+          </main>
+        </div>
+
+
 
         <footer className="legend">
-        <span className="legend__item">
-          <span className="legend__swatch legend__swatch--main" />定位側 開通中
-        </span>
           <span className="legend__item">
-          <span className="legend__swatch legend__swatch--branch" />反位側 開通中
-        </span>
+            <span className="legend__swatch legend__swatch--main" />定位側 開通中
+          </span>
           <span className="legend__item">
-          <span className="legend__swatch legend__swatch--idle" />非開通側
-        </span>
+            <span className="legend__swatch legend__swatch--branch" />反位側 開通中
+          </span>
           <span className="legend__item">
-          <span className="legend__swatch legend__swatch--rail" />通常区間
-        </span>
+            <span className="legend__swatch legend__swatch--idle" />非開通側
+          </span>
+          <span className="legend__item">
+            <span className="legend__swatch legend__swatch--rail" />通常区間
+          </span>
         </footer>
       </div>
   );

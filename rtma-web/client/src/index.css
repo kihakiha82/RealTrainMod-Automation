@@ -93,8 +93,17 @@ body,
   cursor: not-allowed;
 }
 
-.map-root {
+.screen {
   flex: 1;
+  position: relative;
+  overflow: hidden;
+  display: flex;           /* 追加: 子要素で flex: 1 を機能させるため */
+  flex-direction: column;  /* 追加 */
+}
+
+.map-root {
+  width: 100%;
+  height: 100%;            /* 明示的に高さ100%を指定 */
   position: relative;
   overflow: hidden;
 }
@@ -540,4 +549,172 @@ body,
 .timetable-edit__pass-mark {
   font-style: italic;
   color: var(--select);
+}
+
+/* 左側サイドパネル本体 */
+.side-panel {
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+/* サイドパネルのヘッダータイトル（オプション） */
+.side-panel__header {
+  padding: 8px 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.15);
+}
+
+/* リサイズスプリッター（ドラッグ領域） */
+.resizer {
+  width: 5px;
+  background: var(--line);
+  cursor: col-resize;
+  flex-shrink: 0;
+  transition: background 0.15s ease;
+  z-index: 10;
+}
+
+.resizer:hover,
+.resizer:active {
+  background: var(--amber);
+  box-shadow: 0 0 8px rgba(232, 163, 61, 0.4);
+}
+/*ツリー構造*/
+.tree-panel {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 6px;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--text);
+}
+
+/* スクロールバーのカスタマイズ（暗色テーマ統合） */
+.tree-panel::-webkit-scrollbar {
+  width: 6px;
+}
+.tree-panel::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 3px;
+}
+.tree-panel::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
+/* 親要素（折りたたみノード） */
+.tree-panel details {
+  margin-bottom: 2px;
+}
+
+/* 折りたたみのタイトル部分 (summary) */
+.tree-panel summary {
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  list-style: none; /* デフォルト矢印消去 */
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  transition: background 0.15s ease, color 0.15s ease;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.tree-panel summary::-webkit-details-marker {
+  display: none; /* Safari用矢印消去 */
+}
+
+/* 開閉トグル用の三角形アイコン */
+.tree-panel summary::before {
+  content: '▶';
+  font-size: 8px;
+  color: var(--text-dim);
+  display: inline-block;
+  transition: transform 0.15s ease, color 0.15s ease;
+  width: 10px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+/* 展開（open）時の矢印アニメーション */
+.tree-panel details[open] > summary::before {
+  transform: rotate(90deg);
+  color: var(--amber);
+}
+
+.tree-panel summary:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
+}
+
+/* ツリーの子要素エリア（点線ガイド付き） */
+.tree-children {
+  padding-left: 12px;
+  margin-left: 11px;
+  border-left: 1px dashed var(--line);
+  margin-top: 2px;
+  margin-bottom: 2px;
+}
+
+/* 末端のツリー項目 */
+.tree-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 18px; /* 矢印がない分のインデント */
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-dim);
+  transition: background 0.15s ease, color 0.15s ease;
+  white-space: nowrap;
+}
+
+.tree-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+}
+
+/* アイコン指定（絵文字やカスタムアイコン用） */
+.tree-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+/* アクティブ/選択中のノード（必要に応じて `.is-selected` を付与） */
+.tree-item.is-selected,
+.tree-panel summary.is-selected {
+  background: rgba(232, 163, 61, 0.15);
+  color: var(--amber);
+  font-weight: 600;
+}
+
+.tree-item.is-selected .tree-icon {
+  opacity: 1;
+}
+
+.null-root {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 32px 16px;
+  background: var(--bg);
+  color: var(--text);
+  text-align: center;
 }
