@@ -184,15 +184,15 @@ export async function unassignTrain(uuid) {
   return res.json();
 }
 
-/** 路線(Route)一覧を取得する */
+/** 系統(Route)一覧を取得する */
 export async function fetchRoutes() {
   const res = await fetch('/api/routes');
-  if (!res.ok) throw new Error(`路線一覧の取得に失敗しました (HTTP ${res.status})`);
+  if (!res.ok) throw new Error(`系統一覧の取得に失敗しました (HTTP ${res.status})`);
   return res.json();
 }
 
 /**
- * 路線を新規作成/更新(upsert)する。既存を更新する場合はbody.idを含めること
+ * 系統を新規作成/更新(upsert)する。既存を更新する場合はbody.idを含めること
  * (含めない場合は新規作成扱いになる)。
  * body: { id?, name, tags?, waypoints: { id?, segId, s, x?, z?, stationId?, boundaryNodeKey? }[] }
  * (手順4: waypointは番線(trackId)ではなく駅の境界点(boundaryNodeKey)を参照する。
@@ -207,12 +207,11 @@ export async function saveRoute(body) {
   });
   if (!res.ok) {
     const errBody = await res.json().catch(() => ({}));
-    throw new Error(errBody.error || `路線の保存に失敗しました (HTTP ${res.status})`);
+    throw new Error(errBody.error || `系統の保存に失敗しました (HTTP ${res.status})`);
   }
   return res.json();
 }
 
-/** 路線を削除する */
 /**
  * 系統を削除する。他の時刻表から参照されている場合はデフォルトでは409を返す
  * (deleteStationと同じ「警告付き強制削除」パターン)。
