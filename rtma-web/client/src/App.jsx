@@ -3,12 +3,14 @@ import Map2D from './components/Map2D';
 import TimeEditPanel from './components/windows/TimeEditPanel.jsx';
 import RouteEditPanel from './components/windows/RouteEditPanel.jsx';
 import StationEditPanel from './components/windows/StationEditPanel.jsx';
-import { fetchRails, fetchPlayerPosition, fetchTime, saveTime, fetchRouteProfile, fetchTrainSpecs,  fetchTrainAssignments, saveRoute, fetchStations, fetchRoutes, deleteRoute } from './api';
+import { fetchRails, fetchPlayerPosition, fetchTime, saveTime, fetchRouteProfile, fetchTrainSpecs,  fetchTrainAssignments, saveRoute, fetchStations, fetchRoutes, deleteRoute, fetchLines, saveLine, deleteLine } from './api';
 import { extrapolateTime, extrapolateFullDateTime, formatDateTime } from './timeUtils';
 import { findRailRoute } from './mapEngine/railGraph';
 import SimpleStaffPanel from "./components/windows/SimpleStaffPanel.jsx";
 import TimetableEditPanel from "./components/windows/TimetableEditPanel.jsx";
 import RouteManagerPanel from "./components/windows/RouteManagerPanel.jsx";
+import LineEditPanel from "./components/windows/LineEditPanel.jsx";
+import LineManagerPanel from "./components/windows/LineManagerPanel.jsx";
 
 export default function App() {
   const [segments,       setSegments]       = useState([]);
@@ -59,6 +61,119 @@ export default function App() {
   // 駅境界点マーカーのクリック)を有効にする。RouteManagerPanelの「新規作成」/「編集」を
   // 押すとtrueになり、「クリア」(=編集セッションを閉じる)でfalseに戻る。
   const [isRouteEditActive, setIsRouteEditActive] = useState(false);
+
+  // 路線(Line)編集(再編集対応)。系統と同じ「Manager(一覧)+Editor(実編集)」の2枚構成だが、
+  // 路線は地図クリックでの経路構築が不要なため、isRouteEditActiveに相当する「セッション
+  // 開始/終了」の概念自体は同じくisLineEditActiveで持つ(新規作成/編集を押すとtrue、
+  // クリアでfalse)。
+  const [linesList,        setLinesList]        = useState([]);
+  const [linesLoading,     setLinesLoading]     = useState(false);
+  const [linesLoadError,   setLinesLoadError]   = useState(null);
+  const [editingLineId,    setEditingLineId]    = useState(null);
+  const [lineEditName,     setLineEditName]     = useState('');
+  const [lineEditTagsInput,setLineEditTagsInput]= useState('');
+  const [lineEditColor,    setLineEditColor]    = useState('#e8a33d');
+  const [lineEditStationIds, setLineEditStationIds] = useState([]);
+  const [lineEditSaveStatus, setLineEditSaveStatus] = useState(null);
+  const [lineEditSaveError,  setLineEditSaveError]  = useState(null);
+  const [isLineEditActive, setIsLineEditActive] = useState(false);
+  const [showLineManager,  setShowLineManager]  = useState(false);
+
+  async function refreshLinesList() {
+    setLinesLoading(true);
+    setLinesLoadError(null);
+    try {
+      setLinesList(await fetchLines());
+    } catch (e) {
+      setLinesLoadError(e.message);
+    } finally {
+      setLinesLoading(false);
+    }
+  }
+
+  /** 路線編集: 名前・タグ・色・駅リスト・再編集中idを全てクリアし、編集セッションを終了する */
+  function handleClearLineEdit() {
+    setEditingLineId(null);
+    setLineEditName('');
+    setLineEditTagsInput('');
+    setLineEditColor('#e8a33d');
+    setLineEditStationIds([]);
+    setLineEditSaveStatus(null);
+    setLineEditSaveError(null);
+    setIsLineEditActive(false);
+  }
+
+  /** LineManagerPanelの「新規作成」から呼ばれる */
+  function handleStartNewLine() {
+    handleClearLineEdit();
+    setIsLineEditActive(true);
+  }
+
+  /** LineManagerPanelの「編集」から呼ばれる */
+  function handleLoadLineForEdit(line) {
+    setEditingLineId(line.id);
+    setLineEditName(line.name ?? '');
+    setLineEditTagsInput((line.tags ?? []).join(', '));
+    setLineEditColor(line.color ?? '#e8a33d');
+    setLineEditStationIds([...(line.stationIds ?? [])]);
+    setLineEditSaveStatus(null);
+    setLineEditSaveError(null);
+    setIsLineEditActive(true);
+    bringToFront('lineEditor');
+  }
+
+  /** LineManagerPanelの「削除」から呼ばれる。路線は他から参照されないため確認なしで削除できる */
+  async function handleDeleteLineFromManager(id) {
+    await deleteLine(id);
+    if (id === editingLineId) {
+      handleClearLineEdit();
+    }
+    await refreshLinesList();
+  }
+
+  function handleAddLineStation(stationId) {
+    setLineEditStationIds((prev) => [...prev, stationId]);
+    setLineEditSaveStatus(null);
+  }
+
+  function handleRemoveLineStationAt(index) {
+    setLineEditStationIds((prev) => prev.filter((_, i) => i !== index));
+    setLineEditSaveStatus(null);
+  }
+
+  function handleMoveLineStation(index, direction) {
+    setLineEditStationIds((prev) => {
+      const targetIndex = index + direction;
+      if (targetIndex < 0 || targetIndex >= prev.length) return prev;
+      const next = [...prev];
+      [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+      return next;
+    });
+    setLineEditSaveStatus(null);
+  }
+
+  /** 路線編集: editingLineIdがあればbodyにidを含めてupsert(=既存を上書き更新)にする */
+  async function handleSaveLineEdit() {
+    if (!lineEditName.trim()) return;
+    setLineEditSaveStatus('saving');
+    setLineEditSaveError(null);
+    try {
+      const tags = lineEditTagsInput.split(',').map((t) => t.trim()).filter(Boolean);
+      const saved = await saveLine({
+        id: editingLineId ?? undefined,
+        name: lineEditName.trim(),
+        tags,
+        color: lineEditColor,
+        stationIds: lineEditStationIds,
+      });
+      setEditingLineId(saved.id);
+      setLineEditSaveStatus('saved');
+      await refreshLinesList();
+    } catch (e) {
+      setLineEditSaveStatus('error');
+      setLineEditSaveError(e.message);
+    }
+  }
 
   async function refreshRoutesList() {
     setRoutesLoading(true);
@@ -132,6 +247,8 @@ export default function App() {
     stationPanel: 100,
     simpleStaffPanel: 100,
     timetableEditor: 100,
+    lineManager: 100,
+    lineEditor: 100,
   });
 
   //windowを最前面に持ってくる
@@ -766,6 +883,12 @@ export default function App() {
     refreshRoutesList();
   }, []);
 
+  // ── 路線(Line)一覧(路線編集パネルの一覧表示用)。1回だけ取得し、
+  // 以後は保存・削除のたびにrefreshLinesList呼び出しで更新する ──
+  useEffect(() => {
+    refreshLinesList();
+  }, []);
+
   // ── 車両データ(trainspecs)の取得。簡易スタフの車両選択に使う。1回だけでよい ──
   useEffect(() => {
     let cancelled = false;
@@ -864,6 +987,13 @@ export default function App() {
             >
               🛤 系統編集
             </button>
+
+            <button
+                className={`mode-btn${showLineManager ? ' is-active' : ''}`}
+                onClick={() => setShowLineManager((v) => !v)}
+            >
+              🚋 路線編集
+            </button>
           </div>
         </header>
 
@@ -926,7 +1056,7 @@ export default function App() {
                     setShowCommentEditor(true)
                     setActiveView('comment')
                   }
-              }
+                  }
               >
                 <span className="tree-icon">💬</span> コメント
               </div>
@@ -1001,6 +1131,44 @@ export default function App() {
                     onClose={() => setShowRouteManager(false)}
                     zIndex={windowZIndices.routeManager}
                     onFocus={() => bringToFront('routeManager')}
+                />
+            )}
+            {showLineManager && (
+                <LineManagerPanel
+                    lines={linesList}
+                    editingLineId={editingLineId}
+                    isLoading={linesLoading}
+                    loadError={linesLoadError}
+                    onRefresh={refreshLinesList}
+                    onNew={handleStartNewLine}
+                    onEdit={handleLoadLineForEdit}
+                    onDelete={handleDeleteLineFromManager}
+                    onClose={() => setShowLineManager(false)}
+                    zIndex={windowZIndices.lineManager}
+                    onFocus={() => bringToFront('lineManager')}
+                />
+            )}
+            {isLineEditActive && (
+                <LineEditPanel
+                    stations={mapStations}
+                    stationIds={lineEditStationIds}
+                    name={lineEditName}
+                    tagsInput={lineEditTagsInput}
+                    color={lineEditColor}
+                    onNameChange={setLineEditName}
+                    onTagsInputChange={setLineEditTagsInput}
+                    onColorChange={setLineEditColor}
+                    onAddStation={handleAddLineStation}
+                    onRemoveStationAt={handleRemoveLineStationAt}
+                    onMoveStation={handleMoveLineStation}
+                    isEditing={editingLineId != null}
+                    saveStatus={lineEditSaveStatus}
+                    saveError={lineEditSaveError}
+                    onSave={handleSaveLineEdit}
+                    onClear={handleClearLineEdit}
+                    onClose={handleClearLineEdit}
+                    zIndex={windowZIndices.lineEditor}
+                    onFocus={() => bringToFront('lineEditor')}
                 />
             )}
             {isRouteEditActive && (

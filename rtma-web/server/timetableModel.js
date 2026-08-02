@@ -7,9 +7,9 @@ const VALID_HANDLINGS = new Set(['stop', 'pass', 'operational-stop']);
 
 function isClock(value) {
   return value && Number.isInteger(value.hour) && Number.isInteger(value.minute) && Number.isInteger(value.second)
-    && value.hour >= 0 && value.hour <= 23
-    && value.minute >= 0 && value.minute <= 59
-    && value.second >= 0 && value.second <= 59;
+      && value.hour >= 0 && value.hour <= 23
+      && value.minute >= 0 && value.minute <= 59
+      && value.second >= 0 && value.second <= 59;
 }
 
 function validateTimetable(timetable, { routesById, stationsById } = {}) {
@@ -34,6 +34,7 @@ function validateTimetable(timetable, { routesById, stationsById } = {}) {
     if (!VALID_HANDLINGS.has(handling)) return `stationPlans[${index}].handlingが不正です`;
     if (plan.arrival != null && !isClock(plan.arrival)) return `stationPlans[${index}].arrivalが不正です`;
     if (plan.departure != null && !isClock(plan.departure)) return `stationPlans[${index}].departureが不正です`;
+    if (plan.manualDeparture != null && !isClock(plan.manualDeparture)) return `stationPlans[${index}].manualDepartureが不正です`;
     if (typeof plan.turnback !== 'undefined' && typeof plan.turnback !== 'boolean') return `stationPlans[${index}].turnbackはbooleanです`;
     if (handling !== 'pass') {
       if (typeof plan.trackId !== 'string' || !plan.trackId || typeof plan.stopId !== 'string' || !plan.stopId) {
@@ -61,6 +62,7 @@ function normalizeTimetable(timetable) {
         handling,
         pass: handling === 'pass',
         turnback: plan.turnback === true,
+        manualDeparture: plan.manualDeparture ?? null,
       };
     }),
   };

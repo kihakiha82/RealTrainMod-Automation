@@ -20,6 +20,12 @@ const TICKS_PER_SECOND = 20;
  *   startTick: number,               始発駅発車時刻(tick、0時からの経過tickなど呼び出し側で定義)
  *   dwellTicksByStation?: {[name]: number},  駅ごとの停車時分(tick)。無ければdefaultDwellTicksを使う
  *   defaultDwellTicks?: number,      デフォルトの停車時分(tick)
+ *   targetDepartureTickByStation?: {[name]: number},  【停車パターン拡充】駅ごとの「発車時刻を
+ *     この時刻に指定する」手動調整。値は「その時刻を0時起点のtickに変換しただけ(日オフセット無し)」
+ *     の生の値でよい(clockToTick()の出力をそのまま渡せる)。実際の適用時は、到着tick(複数日に
+ *     またがりうる絶対値)に対して直近の未来になるよう自動的に日を合わせる
+ *     (resolveTargetDepartureTick参照)。指定された駅ではdwellTicksByStationを無視し、
+ *     到着後この時刻ちょうどに発車するよう停車時分を逆算する(= 待避・時間調整のための延長停車)。
  * }
  *
  * 戻り値: {
@@ -30,11 +36,32 @@ const TICKS_PER_SECOND = 20;
  *     departureTick: number|null,   終着駅はnull
  *     legDurationTicks?: number,    1つ前の駅からの走行時分(始発駅は無し)
  *     legProfile?: { s: number[], v: number[], t: number[] },  可視化用。tは絶対tick
+ *     departureOverrideApplied?: boolean,  手動発車時刻指定が実際に適用されたか
  *   }[]
  * }
  */
+
+const TICKS_PER_DAY = TICKS_PER_SECOND * 86400;
+
+/**
+ * 手動発車時刻指定(0時起点の生tick。日オフセット無し)を、arrivalTick(到着tick、複数日に
+ * またがりうる絶対値)以降で最初にその時刻になる絶対tickに変換する。到着と同じ日にその時刻が
+ * まだ来ていなければ当日、既に過ぎていれば翌日として扱う(=常に「到着後、直近のその時刻」を
+ * 指す。過去を指すことはない)。
+ */
+function resolveTargetDepartureTick(rawTargetTick, arrivalTick) {
+  const arrivalDay = Math.floor(arrivalTick / TICKS_PER_DAY);
+  const baseTick = ((rawTargetTick % TICKS_PER_DAY) + TICKS_PER_DAY) % TICKS_PER_DAY;
+  let candidate = arrivalDay * TICKS_PER_DAY + baseTick;
+  if (candidate < arrivalTick) candidate += TICKS_PER_DAY;
+  return candidate;
+}
+
 function generateTimetable(points, vLimit, aAccelNet, aBrakeNet, stationIndices, options) {
-  const { startTick, dwellTicksByStation = {}, defaultDwellTicks = 0 } = options;
+  const {
+    startTick, dwellTicksByStation = {}, defaultDwellTicks = 0,
+    targetDepartureTickByStation = {},
+  } = options;
 
   if (stationIndices.length < 2) {
     throw new Error('generateTimetable: 駅は最低2つ必要です(始発・終着)');
@@ -61,7 +88,17 @@ function generateTimetable(points, vLimit, aAccelNet, aBrakeNet, stationIndices,
 
     const arrivalTick = currentTick + leg.legDurationTicks;
     const isLast = i === stationIndices.length - 1;
-    const dwellTicks = isLast ? 0 : (dwellTicksByStation[station.name] ?? defaultDwellTicks);
+
+    let dwellTicks;
+    let departureOverrideApplied = false;
+    const rawTargetTick = !isLast ? targetDepartureTickByStation[station.name] : undefined;
+    if (rawTargetTick != null) {
+      const targetTick = resolveTargetDepartureTick(rawTargetTick, arrivalTick);
+      dwellTicks = targetTick - arrivalTick;
+      departureOverrideApplied = true;
+    } else {
+      dwellTicks = isLast ? 0 : (dwellTicksByStation[station.name] ?? defaultDwellTicks);
+    }
     const departureTick = isLast ? null : arrivalTick + dwellTicks;
 
     schedule.push({
@@ -70,6 +107,7 @@ function generateTimetable(points, vLimit, aAccelNet, aBrakeNet, stationIndices,
       arrivalTick,
       departureTick,
       legDurationTicks: leg.legDurationTicks,
+      departureOverrideApplied,
       legProfile: {
         s: leg.s,
         v: leg.v,

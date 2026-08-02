@@ -5,8 +5,19 @@ import { Window } from '../Window.jsx';
 /**
  * 時刻表(Timetable)編集パネル。表形式(着発時刻テーブル)までを扱う土台。
  *
- * 流れ: 系統を選ぶ → 系統上の各駅ごとに [停車/通過] [番線] [停車位置] [停車秒数] を入力
- *       → 計算(/api/calc/route-timetable)→ 結果テーブル表示 → 名前を付けて保存
+ * 流れ: 系統を選ぶ → 系統上の各駅ごとに [停車/運転停車/通過] [番線] [停車位置] [停車秒数 or
+ *       発車時刻指定] を入力 → 計算(/api/calc/route-timetable)→ 結果テーブル表示 → 名前を
+ *       付けて保存
+ *
+ * 【停車パターン拡充】
+ *   - 運転停車(operational-stop): 旅客の乗降を伴わない停車。物理的には通常の停車と同じ
+ *     (番線・停車位置が必要)だが、結果表示では時刻をカッコ書きにする実務の慣習に合わせる。
+ *   - 発車時刻の手動調整: 中間駅ごとに「停車秒数」の代わりに「発車時刻そのもの」を指定できる。
+ *     到着時刻は物理計算どおり(前倒しはできない)、そこから指定時刻まで停車時分を自動延長する
+ *     (= 対向列車待ち・時間調整のための延長停車)。日をまたぐ指定も自動的に解決される。
+ *   - 折返しの明示: 番線・停車位置を選んだ時点で、実際に計算する前に「この組み合わせだと
+ *     折返しになるか」を駅のinternalRoutesからプレビュー表示する(4.4節の自動導出ロジックを
+ *     計算前に軽量に再現したもの。実際に保存されるturnback値は計算結果側の値を正とする)。
  *
  * 「📂 保存済み一覧」から既存ダイヤを選んで読み込み、再編集・再保存(同名なら上書き)・
  * 削除ができる(RouteManagerPanelと同じ「警告付き強制削除」パターンをここでも使う)。
@@ -33,6 +44,10 @@ const TICKS_PER_SECOND = 20; // client/calc/timetableGenerator.jsと同じ値(Mi
  * の駅スロット抽出部分と完全に一致させる必要がある(サーバーはstationPlansの各要素が
  * この並びと同じstationId・同じ件数であることを検証するため、ズレると保存前の計算で
  * 必ずエラーになる)。ロジックを変更する場合は両方を同時に直すこと。
+ *
+ * 【停車パターン拡充】中間駅(intermediate)には、進入境界点・進出境界点のboundaryNodeKeyも
+ * 添えて返す(entryNodeKey/exitNodeKey)。折返しプレビュー(previewTurnback)が、駅の
+ * internalRoutesから該当するenter/exitルートを引き当てるのに必要なため。
  */
 function deriveStationSlots(waypoints) {
     if (!Array.isArray(waypoints) || waypoints.length < 2) return [];
@@ -51,13 +66,39 @@ function deriveStationSlots(waypoints) {
         const a = waypoints[i];
         const b = waypoints[i + 1];
         if (a.stationId != null && a.stationId === b.stationId) {
-            slots.push({ kind: 'intermediate', stationId: a.stationId });
+            slots.push({
+                kind: 'intermediate',
+                stationId: a.stationId,
+                entryNodeKey: a.boundaryNodeKey ?? null,
+                exitNodeKey: b.boundaryNodeKey ?? null,
+            });
         }
     }
     if (terminalIsSingleton) {
         slots.push({ kind: 'terminal', stationId: waypoints[n - 1].stationId });
     }
     return slots;
+}
+
+/**
+ * 【停車パターン拡充・折返し明示】中間駅で番線・停車位置を選んだ時点で、実際に計算を
+ * 走らせる前に「この組み合わせだと折返しになるか」をプレビューする。
+ * ロジックはサーバー側 client/calc/timetableAssembler.js の detectTurnback() と同じ
+ * (直前のenterルート最終区間と、直後のexitルート先頭区間のreversedを比較する)。
+ * 一致するenter/exitルートがまだ無い(番線・停車位置未選択など)場合はnullを返す
+ * (「まだ判定できない」。false=「判定できて、折返しではない」と区別する)。
+ */
+function previewTurnback(station, entryNodeKey, exitNodeKey, trackId, stopId) {
+    if (!station || !entryNodeKey || !exitNodeKey || !trackId || !stopId) return null;
+    const enter = (station.internalRoutes ?? []).find((r) =>
+        r.type === 'enter' && r.entryNodeKey === entryNodeKey && r.trackId === trackId && r.stopId === stopId);
+    const exit = (station.internalRoutes ?? []).find((r) =>
+        r.type === 'exit' && r.exitNodeKey === exitNodeKey && r.trackId === trackId && r.stopId === stopId);
+    if (!enter || !exit) return null;
+    const lastEnterSeg = enter.path?.[enter.path.length - 1];
+    const firstExitSeg = exit.path?.[0];
+    if (!lastEnterSeg || !firstExitSeg) return false;
+    return Boolean(lastEnterSeg.reversed) !== Boolean(firstExitSeg.reversed);
 }
 
 /**
@@ -235,15 +276,20 @@ export default function TimetableEditPanel({ stations, trainSpecs, onClose, zInd
             const firstStop = firstTrack?.stops?.[0] ?? null;
             const loaded = loadPlans?.[i];
             if (loaded) {
+                const handling = loaded.handling ?? (loaded.pass ? 'pass' : 'stop');
                 return {
                     stationId: slot.stationId,
                     stationName: station?.name ?? '(不明な駅)',
                     kind: slot.kind,
-                    pass: loaded.handling === 'pass',
+                    entryNodeKey: slot.entryNodeKey ?? null,
+                    exitNodeKey: slot.exitNodeKey ?? null,
+                    handling,
                     trackId: loaded.trackId ?? firstTrack?.id ?? '',
                     stopId: loaded.stopId ?? firstStop?.id ?? '',
                     dwellSeconds: dwellSecondsFromClocks(loaded.arrival, loaded.departure)
                         || (slot.kind === 'intermediate' ? 30 : 0),
+                    manualDepartureEnabled: loaded.manualDeparture != null,
+                    manualDeparture: loaded.manualDeparture ?? { hour: 0, minute: 0, second: 0 },
                 };
             }
             const prev = prevRows[i]?.stationId === slot.stationId ? prevRows[i] : null;
@@ -251,10 +297,14 @@ export default function TimetableEditPanel({ stations, trainSpecs, onClose, zInd
                 stationId: slot.stationId,
                 stationName: station?.name ?? '(不明な駅)',
                 kind: slot.kind,
-                pass: prev?.pass ?? false,
+                entryNodeKey: slot.entryNodeKey ?? null,
+                exitNodeKey: slot.exitNodeKey ?? null,
+                handling: prev?.handling ?? 'stop',
                 trackId: prev?.trackId ?? firstTrack?.id ?? '',
                 stopId: prev?.stopId ?? firstStop?.id ?? '',
                 dwellSeconds: prev?.dwellSeconds ?? (slot.kind === 'intermediate' ? 30 : 0),
+                manualDepartureEnabled: prev?.manualDepartureEnabled ?? false,
+                manualDeparture: prev?.manualDeparture ?? { hour: 0, minute: 0, second: 0 },
             };
         }));
         if (pendingLoadPlans) setPendingLoadPlans(null);
@@ -275,7 +325,7 @@ export default function TimetableEditPanel({ stations, trainSpecs, onClose, zInd
     }
 
     const canCompute = selectedRoute && trainResourceName && rows.length > 0 &&
-        rows.every((row) => row.pass || (row.trackId && row.stopId));
+        rows.every((row) => row.handling === 'pass' || (row.trackId && row.stopId));
 
     async function handleCompute() {
         setIsComputing(true);
@@ -283,13 +333,17 @@ export default function TimetableEditPanel({ stations, trainSpecs, onClose, zInd
         setResult(null);
         try {
             const stationPlans = rows.map((row) => (
-                row.pass
-                    ? { stationId: row.stationId, pass: true }
+                row.handling === 'pass'
+                    ? { stationId: row.stationId, pass: true, handling: 'pass' }
                     : {
                         stationId: row.stationId,
                         trackId: row.trackId,
                         stopId: row.stopId,
                         dwellTicks: Math.max(0, Math.round((Number(row.dwellSeconds) || 0) * TICKS_PER_SECOND)),
+                        handling: row.handling, // 'stop' | 'operational-stop'
+                        manualDeparture: (row.kind === 'intermediate' && row.manualDepartureEnabled)
+                            ? row.manualDeparture
+                            : null,
                     }
             ));
             const res = await calculateRouteTimetable({
@@ -318,6 +372,7 @@ export default function TimetableEditPanel({ stations, trainSpecs, onClose, zInd
                 trackId: plan.trackId ?? undefined,
                 stopId: plan.stopId ?? undefined,
                 turnback: plan.turnback === true,
+                manualDeparture: plan.manualDeparture ?? null,
                 arrival: sched?.arrivalClock
                     ? { hour: sched.arrivalClock.hour, minute: sched.arrivalClock.minute, second: sched.arrivalClock.second }
                     : null,
@@ -342,6 +397,9 @@ export default function TimetableEditPanel({ stations, trainSpecs, onClose, zInd
     }
 
     // handling==='pass'の駅はresult.scheduleに含まれない(通過駅は着発時刻を持たないため)。
+    // 【重要】'operational-stop'(運転停車)は物理的に停車するためscheduleに含まれる。
+    // 以前ここを`plan.handling === 'stop'`としていたため、運転停車の駅がsched=null扱いになり、
+    // それ以降の駅すべてでカーソルが1つずつズレる(全員が別駅の時刻を表示する)重大なバグがあった。
     // 【注意】stationIdをキーにしたMapで対応づけると、始発駅と終着駅が同じ駅になる環状・
     // 折返し系統でキーが衝突し、後勝ちで別駅のデータに上書きされてしまう(実際に起きたバグ)。
     // サーバー側(server.js)は出現順のカーソルでschedule[]とstationPlans[]を対応づけている
@@ -351,7 +409,7 @@ export default function TimetableEditPanel({ stations, trainSpecs, onClose, zInd
         let stopCursor = 0;
         return result.stationPlans.map((plan) => ({
             plan,
-            sched: plan.handling === 'stop' ? result.schedule[stopCursor++] : null,
+            sched: plan.handling !== 'pass' ? result.schedule[stopCursor++] : null,
         }));
     }, [result]);
 
@@ -503,33 +561,38 @@ export default function TimetableEditPanel({ stations, trainSpecs, onClose, zInd
                             <th>扱い</th>
                             <th>番線</th>
                             <th>停車位置</th>
-                            <th>停車(秒)</th>
+                            <th>停車(秒)/発車指定</th>
+                            <th>折返</th>
                         </tr>
                         </thead>
                         <tbody>
                         {rows.map((row, i) => {
-                            const canPass = row.kind === 'intermediate';
+                            const canChooseHandling = row.kind === 'intermediate';
+                            const isPass = row.handling === 'pass';
                             const tracks = tracksFor(row.stationId);
                             const stops = stopsFor(row.stationId, row.trackId);
+                            const turnbackPreview = (row.kind === 'intermediate' && !isPass)
+                                ? previewTurnback(stationsById.get(row.stationId), row.entryNodeKey, row.exitNodeKey, row.trackId, row.stopId)
+                                : null;
                             return (
                                 <tr key={`${row.stationId}-${i}`}>
                                     <td>{row.stationName}<span className="timetable-edit__kind">{KIND_LABEL[row.kind]}</span></td>
                                     <td>
-                                        {canPass ? (
-                                            <label className="timetable-edit__pass">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={row.pass}
-                                                    onChange={(e) => updateRow(i, { pass: e.target.checked })}
-                                                />
-                                                通過
-                                            </label>
+                                        {canChooseHandling ? (
+                                            <select
+                                                value={row.handling}
+                                                onChange={(e) => updateRow(i, { handling: e.target.value })}
+                                            >
+                                                <option value="stop">停車</option>
+                                                <option value="operational-stop">運転停車</option>
+                                                <option value="pass">通過</option>
+                                            </select>
                                         ) : (
                                             <span className="timetable-edit__kind">停車</span>
                                         )}
                                     </td>
                                     <td>
-                                        {!row.pass && (
+                                        {!isPass && (
                                             <select
                                                 value={row.trackId}
                                                 onChange={(e) => {
@@ -544,7 +607,7 @@ export default function TimetableEditPanel({ stations, trainSpecs, onClose, zInd
                                         )}
                                     </td>
                                     <td>
-                                        {!row.pass && (
+                                        {!isPass && (
                                             <select
                                                 value={row.stopId}
                                                 onChange={(e) => updateRow(i, { stopId: e.target.value })}
@@ -557,13 +620,53 @@ export default function TimetableEditPanel({ stations, trainSpecs, onClose, zInd
                                         )}
                                     </td>
                                     <td>
-                                        {!row.pass && (
-                                            <input
-                                                type="number" min="0"
-                                                value={row.dwellSeconds}
-                                                onChange={(e) => updateRow(i, { dwellSeconds: Number(e.target.value) })}
-                                                style={{ width: 56 }}
-                                            />
+                                        {!isPass && (
+                                            row.kind !== 'intermediate' ? (
+                                                // 始発駅の発車時刻は上の「出発時刻」欄そのもの、終着駅には発車が無いため
+                                                // 手動調整の対象は中間駅のみ。
+                                                <input
+                                                    type="number" min="0"
+                                                    value={row.dwellSeconds}
+                                                    onChange={(e) => updateRow(i, { dwellSeconds: Number(e.target.value) })}
+                                                    style={{ width: 56 }}
+                                                />
+                                            ) : row.manualDepartureEnabled ? (
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                                                    <input type="number" min="0" max="23" value={row.manualDeparture.hour}
+                                                           onChange={(e) => updateRow(i, { manualDeparture: { ...row.manualDeparture, hour: Number(e.target.value) } })}
+                                                           style={{ width: 36 }} />
+                                                    :
+                                                    <input type="number" min="0" max="59" value={row.manualDeparture.minute}
+                                                           onChange={(e) => updateRow(i, { manualDeparture: { ...row.manualDeparture, minute: Number(e.target.value) } })}
+                                                           style={{ width: 36 }} />
+                                                    :
+                                                    <input type="number" min="0" max="59" value={row.manualDeparture.second}
+                                                           onChange={(e) => updateRow(i, { manualDeparture: { ...row.manualDeparture, second: Number(e.target.value) } })}
+                                                           style={{ width: 36 }} />
+                                                    <button className="mode-btn" style={{ padding: '1px 4px' }}
+                                                            title="発車時刻指定を解除して秒数指定に戻す"
+                                                            onClick={() => updateRow(i, { manualDepartureEnabled: false })}>✕</button>
+                                                </div>
+                                            ) : (
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                                    <input
+                                                        type="number" min="0"
+                                                        value={row.dwellSeconds}
+                                                        onChange={(e) => updateRow(i, { dwellSeconds: Number(e.target.value) })}
+                                                        style={{ width: 56 }}
+                                                    />
+                                                    <button className="mode-btn" style={{ padding: '1px 4px', fontSize: 10 }}
+                                                            title="停車秒数の代わりに、発車時刻そのものを指定する"
+                                                            onClick={() => updateRow(i, { manualDepartureEnabled: true })}>時刻指定</button>
+                                                </div>
+                                            )
+                                        )}
+                                    </td>
+                                    <td>
+                                        {turnbackPreview === true && (
+                                            <span style={{ color: 'var(--amber)', fontSize: 11 }} title="現在の番線・停車位置の組み合わせだと折返しになります">
+                                                ⇄折返
+                                            </span>
                                         )}
                                     </td>
                                 </tr>
@@ -597,24 +700,34 @@ export default function TimetableEditPanel({ stations, trainSpecs, onClose, zInd
                             {stationPlansWithSchedule.map(({ plan, sched }, i) => {
                                 const stationName = stationsById.get(plan.stationId)?.name ?? plan.stationId;
                                 const isPass = plan.handling === 'pass';
+                                const isOperational = plan.handling === 'operational-stop';
+                                // 運転停車は実務の時刻表と同じ慣習で時刻をカッコ書きにする
+                                // (旅客が乗降しない停車であることを示す)。
+                                const wrapClock = (text) => (isOperational ? `(${text})` : text);
                                 return (
                                     <Fragment key={i}>
                                         <tr className="timetable-edit__row timetable-edit__row--arrival">
                                             <td>着</td>
                                             <td className={isPass ? 'timetable-edit__pass-mark' : undefined}>
-                                                {isPass ? 'レ' : formatClock(sched?.arrivalClock)}
+                                                {isPass ? 'レ' : wrapClock(formatClock(sched?.arrivalClock))}
                                             </td>
                                             <td></td>
                                         </tr>
                                         <tr className="timetable-edit__row timetable-edit__row--station">
-                                            <td>{stationName}</td>
+                                            <td>
+                                                {stationName}
+                                                {isOperational && <span style={{ color: 'var(--text-dim)', fontSize: 11 }}> (運転停車)</span>}
+                                            </td>
                                             <td>{isPass ? '—' : (sched?.trackName ?? '—')}</td>
                                             <td></td>
                                         </tr>
                                         <tr className="timetable-edit__row timetable-edit__row--departure">
                                             <td>発</td>
                                             <td className={isPass ? 'timetable-edit__pass-mark' : undefined}>
-                                                {isPass ? 'レ' : formatClock(sched?.departureClock)}
+                                                {isPass ? 'レ' : wrapClock(formatClock(sched?.departureClock))}
+                                                {sched?.departureOverrideApplied && (
+                                                    <span style={{ color: 'var(--amber)', fontSize: 11 }} title="発車時刻を手動指定しています"> ⏱指定</span>
+                                                )}
                                             </td>
                                             <td>
                                                 {plan.turnback && (

@@ -409,11 +409,29 @@ app.post('/api/calc/route-timetable', (req, res) => {
     dwellTicksByStation[st.stationName] = st.dwellTicks ?? 0;
   }
 
+  // 【停車パターン拡充】各駅のstationPlansにmanualDeparture({hour,minute,second})が
+  // 指定されていれば、その駅ではdwellTicksByStationを無視し、指定時刻ちょうどに発車する
+  // よう停車時分を逆算する(generateTimetable側で到着tickに対する日跨ぎを解決する)。
+  // stationPlansとstationsWithSの対応は、通過(pass)駅を挟んで順序がズレるため、
+  // 出現順カーソル(assembled.stationStopsの生成順)で対応づける必要がある。
+  const targetDepartureTickByStation = {};
+  {
+    let stopCursor = 0;
+    for (const plan of stationPlans) {
+      if (plan.pass) continue;
+      const st = stationsWithS[stopCursor++];
+      const md = plan.manualDeparture;
+      if (st && md && Number.isInteger(md.hour) && Number.isInteger(md.minute) && Number.isInteger(md.second)) {
+        targetDepartureTickByStation[st.stationName] = clockToTick(md.hour, md.minute, md.second);
+      }
+    }
+  }
+
   let result;
   try {
     result = generateTimetable(
         stationsForProfile.points, vLimit, aAccelNet, aBrakeNet,
-        stationsForProfile.stationIndices, { startTick, dwellTicksByStation },
+        stationsForProfile.stationIndices, { startTick, dwellTicksByStation, targetDepartureTickByStation },
     );
   } catch (genErr) {
     res.status(400).json({ error: genErr.message });
@@ -450,6 +468,9 @@ app.post('/api/calc/route-timetable', (req, res) => {
     // 進入・進出ルートのreversed比較から自動導出した値(assembled.stationStops)を採用する。
     // stationPlansには通過(pass)駅も含まれるが、assembled.stationStopsは停車駅のみ(pass駅は
     // recordStopが呼ばれない)なので、両者は同じ相対順序を保ったまま停車駅だけを消費して対応させる。
+    // 【停車パターン拡充】handlingは'stop'固定に潰さず、入力が'operational-stop'(運転停車)なら
+    // それを維持する(以前はここで常に'stop'に上書きしてしまうバグがあった)。manualDeparture
+    // (手動発車時刻指定)もそのまま往復させ、保存・再編集時に復元できるようにする。
     stationPlans: (() => {
       let stopCursor = 0;
       return stationPlans.map((plan) => {
@@ -457,7 +478,8 @@ app.post('/api/calc/route-timetable', (req, res) => {
           return { ...plan, handling: 'pass', turnback: false };
         }
         const derived = assembled.stationStops[stopCursor++];
-        return { ...plan, handling: 'stop', turnback: derived?.turnback === true };
+        const handling = plan.handling === 'operational-stop' ? 'operational-stop' : 'stop';
+        return { ...plan, handling, turnback: derived?.turnback === true, manualDeparture: plan.manualDeparture ?? null };
       });
     })(),
   };
