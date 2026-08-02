@@ -70,6 +70,15 @@ export async function fetchTimetable(name) {
   return res.json();
 }
 
+/** 保存済み時刻表の一覧をメタデータ付きで取得する(一覧管理パネル用) */
+export async function fetchTimetableList() {
+  const res = await fetch('/api/timetables');
+  if (!res.ok) {
+    throw new Error(`時刻表一覧の取得に失敗しました (HTTP ${res.status})`);
+  }
+  return res.json();
+}
+
 export async function saveTimetable(name, data) {
   const res = await fetch(`/api/timetables/${encodeURIComponent(name)}`, {
     method: 'POST',
@@ -77,9 +86,28 @@ export async function saveTimetable(name, data) {
     body: JSON.stringify(data),
   });
   if (!res.ok) {
-    throw new Error(`時刻表の保存に失敗しました (HTTP ${res.status})`);
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `時刻表の保存に失敗しました (HTTP ${res.status})`);
   }
   return res.json();
+}
+
+/**
+ * 時刻表を削除する。列車に紐付けられている場合はデフォルトでは409を返す
+ * (deleteRoute/deleteStationと同じ「警告付き強制削除」パターン)。
+ * 戻り値: { conflict: true, referencingUuids } | { conflict: false, ok, name, unassignedUuids }
+ */
+export async function deleteTimetable(name, { force = false } = {}) {
+  const url = `/api/timetables/${encodeURIComponent(name)}${force ? '?force=true' : ''}`;
+  const res = await fetch(url, { method: 'DELETE' });
+  const body = await res.json().catch(() => ({}));
+  if (res.status === 409) {
+    return { conflict: true, referencingUuids: body.referencingUuids ?? [] };
+  }
+  if (!res.ok) {
+    throw new Error(body.error || `時刻表の削除に失敗しました (HTTP ${res.status})`);
+  }
+  return { conflict: false, ...body };
 }
 
 /** 系統・駅扱いを指定して、構内ルート込みのダイヤを計算する。 */

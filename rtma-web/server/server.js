@@ -563,7 +563,10 @@ app.get('/api/timetables/:name', (req, res) => {
   });
 });
 
-// 時刻表の一覧
+// 時刻表の一覧(一覧管理パネル用にメタデータ付きで返す)。
+// schemaVersion===2の新形式(TimetableEditPanel由来)は系統名・列車・駅数を添えて返す。
+// SimpleStaffPanel由来の旧形式(2駅間の使い捨てスタフ)はRoute/Stationと紐付いていない
+// ため、name/kind:'legacy'のみを返す(一覧には出すが、再編集はUI側で無効化する想定)。
 app.get('/api/timetables', (req, res) => {
   const dir = path.join(DATA_DIR, 'timetables');
   fs.readdir(dir, (err, files) => {
@@ -571,8 +574,29 @@ app.get('/api/timetables', (req, res) => {
       res.json([]);
       return;
     }
-    const names = files.filter((f) => f.endsWith('.json')).map((f) => f.replace(/\.json$/, ''));
-    res.json(names);
+    const routesById = new Map(readJsonArray(routeFilePath()).map((route) => [route.id, route]));
+    const result = files.filter((f) => f.endsWith('.json')).map((file) => {
+      const name = file.replace(/\.json$/, '');
+      let body = null;
+      try {
+        body = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf-8'));
+      } catch {
+        return { name, kind: 'legacy' };
+      }
+      if (body && body.schemaVersion === TIMETABLE_SCHEMA_VERSION) {
+        const route = routesById.get(body.routeId);
+        return {
+          name,
+          kind: 'v2',
+          routeId: body.routeId,
+          routeName: route?.name ?? '(系統が見つかりません)',
+          trainResourceName: body.trainResourceName,
+          stationCount: (body.stationPlans ?? []).length,
+        };
+      }
+      return { name, kind: 'legacy' };
+    });
+    res.json(result);
   });
 });
 
@@ -608,6 +632,46 @@ function timetableFilePath(name) {
   const safeName = String(name).replace(/[^a-zA-Z0-9_\-]/g, '');
   return path.join(DATA_DIR, 'timetables', `${safeName}.json`);
 }
+
+/** この時刻表名(timetableName)を紐付けている列車(train-assignments)のuuidを列挙する */
+function findAssignmentsReferencingTimetable(name) {
+  const assignments = readAssignments();
+  return Object.entries(assignments)
+      .filter(([, entry]) => entry.timetableName === name)
+      .map(([uuid]) => uuid);
+}
+
+// 時刻表の削除。列車に紐付け(train-assignments)されている場合はデフォルトでは409を返し
+// ブロックする(系統削除・駅削除と同じ「警告付き強制削除」方式)。
+// ?force=true を付けると、紐付けを解除してから削除する。
+app.delete('/api/timetables/:name', (req, res) => {
+  const filePath = timetableFilePath(req.params.name);
+  if (!fs.existsSync(filePath)) {
+    res.status(404).json({ error: '時刻表が見つかりません' });
+    return;
+  }
+
+  const referencingUuids = findAssignmentsReferencingTimetable(req.params.name);
+  const force = req.query.force === 'true';
+
+  if (referencingUuids.length > 0 && !force) {
+    res.status(409).json({
+      error: 'この時刻表は列車に紐付けられているため削除できません。' +
+          '?force=true を付けて再度削除すると、紐付けを解除してから削除します。',
+      referencingUuids,
+    });
+    return;
+  }
+
+  if (referencingUuids.length > 0) {
+    const assignments = readAssignments();
+    for (const uuid of referencingUuids) delete assignments[uuid];
+    writeAssignments(assignments);
+  }
+
+  fs.unlinkSync(filePath);
+  res.json({ ok: true, name: req.params.name, unassignedUuids: referencingUuids });
+});
 
 // ── train-assignments(列車↔スタフの紐付け) ──────────────────────────────────
 //
