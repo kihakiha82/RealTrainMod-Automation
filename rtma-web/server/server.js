@@ -663,9 +663,10 @@ function findAssignmentsReferencingTimetable(name) {
       .map(([uuid]) => uuid);
 }
 
-// 時刻表の削除。列車に紐付け(train-assignments)されている場合はデフォルトでは409を返し
+// 時刻表の削除。列車に紐付け(train-assignments)されている場合、または他のダイヤ
+// (diagram.json、複数列車ダイヤ)から参照されている場合は、デフォルトでは409を返し
 // ブロックする(系統削除・駅削除と同じ「警告付き強制削除」方式)。
-// ?force=true を付けると、紐付けを解除してから削除する。
+// ?force=true を付けると、紐付け解除・ダイヤからの除去を行った上で削除する。
 app.delete('/api/timetables/:name', (req, res) => {
   const filePath = timetableFilePath(req.params.name);
   if (!fs.existsSync(filePath)) {
@@ -674,13 +675,15 @@ app.delete('/api/timetables/:name', (req, res) => {
   }
 
   const referencingUuids = findAssignmentsReferencingTimetable(req.params.name);
+  const referencingDiagrams = findDiagramsReferencingTimetable(req.params.name);
   const force = req.query.force === 'true';
 
-  if (referencingUuids.length > 0 && !force) {
+  if ((referencingUuids.length > 0 || referencingDiagrams.length > 0) && !force) {
     res.status(409).json({
-      error: 'この時刻表は列車に紐付けられているため削除できません。' +
-          '?force=true を付けて再度削除すると、紐付けを解除してから削除します。',
+      error: 'この時刻表は列車、またはダイヤ(複数列車ダイヤ)から参照されているため削除できません。' +
+          '?force=true を付けて再度削除すると、紐付け・参照を解除してから削除します。',
       referencingUuids,
+      referencingDiagrams,
     });
     return;
   }
@@ -691,8 +694,17 @@ app.delete('/api/timetables/:name', (req, res) => {
     writeAssignments(assignments);
   }
 
+  if (referencingDiagrams.length > 0) {
+    removeTimetableFromDiagrams(req.params.name);
+  }
+
   fs.unlinkSync(filePath);
-  res.json({ ok: true, name: req.params.name, unassignedUuids: referencingUuids });
+  res.json({
+    ok: true,
+    name: req.params.name,
+    unassignedUuids: referencingUuids,
+    updatedDiagrams: referencingDiagrams.map((d) => d.diagramId),
+  });
 });
 
 // ── train-assignments(列車↔スタフの紐付け) ──────────────────────────────────
@@ -1725,6 +1737,181 @@ app.delete('/api/lines/:id', (req, res) => {
   }
   lines.splice(idx, 1);
   writeJsonArray(lineFilePath(), lines);
+  res.json({ ok: true, id: req.params.id });
+});
+
+// ── ダイヤ(Diagram、複数列車ダイヤ) ────────────────────────────────────────
+//
+// 「1つのダイヤグラムに複数列車を並べる」ための箱。実際の1列車ごとの着発時刻・番線・
+// 停車位置の計算結果はTimetable(timetables/*.json)が既に持っているため、Diagramは
+// それらをtimetableName参照で束ねるだけの薄いコンテナにする(計算結果を二重に持たない)。
+// OuDiaSecondの Dia(ダイヤ) が Kudari/Nobori 各方向に複数の Ressya(列車) を持つのと
+// 同じ構造。路線(Line)はダイヤグラムの表示軸(駅の並び順)として任意で紐付けられる。
+//
+// Line同様、Diagram自体は他のどのエンティティからも参照されない(Diagram→Timetableの
+// 一方向のみ)ため、Diagram自体の削除に整合性チェックは不要。
+// 逆方向(Timetable側から見てDiagramに参照されているか)は、DELETE /api/timetables/:name
+// 側でfindDiagramsReferencingTimetable()を使ってチェックしている。
+
+function diagramFilePath() {
+  return path.join(DATA_DIR, 'diagram.json');
+}
+
+/** 指定のtimetableNameを参照している列車エントリを、どのダイヤが持っているか列挙する */
+function findDiagramsReferencingTimetable(timetableName) {
+  const diagrams = readJsonArray(diagramFilePath());
+  const result = [];
+  for (const diagram of diagrams) {
+    const count = (diagram.trainRefs ?? []).filter((r) => r.timetableName === timetableName).length;
+    if (count > 0) {
+      result.push({ diagramId: diagram.id, diagramName: diagram.name, count });
+    }
+  }
+  return result;
+}
+
+/** 指定のtimetableNameを参照している列車エントリを、全ダイヤから取り除く(ダイヤ自体は残す) */
+function removeTimetableFromDiagrams(timetableName) {
+  const diagrams = readJsonArray(diagramFilePath());
+  let changed = false;
+  for (const diagram of diagrams) {
+    const before = (diagram.trainRefs ?? []).length;
+    diagram.trainRefs = (diagram.trainRefs ?? []).filter((r) => r.timetableName !== timetableName);
+    if (diagram.trainRefs.length !== before) changed = true;
+  }
+  if (changed) writeJsonArray(diagramFilePath(), diagrams);
+}
+
+/**
+ * DiagramのPOST bodyを受け取り、新規id発行・既存id維持・バリデーションを行う。
+ * @param lines line.jsonの全Line(lineIdの存在検証に使う)
+ * @param timetableNames timetables/ディレクトリに実在するファイル名(拡張子抜き)の集合
+ */
+function buildDiagramFromBody(body, existing, lines, timetableNames) {
+  const { name, tags, lineId, trainRefs } = body;
+
+  if (typeof name !== 'string' || !name.trim()) {
+    return { error: 'nameは必須です' };
+  }
+  if (lineId !== undefined && lineId !== null) {
+    if (typeof lineId !== 'string' || !lines.some((l) => l.id === lineId)) {
+      return { error: `lineId: 路線が見つかりません(${lineId})` };
+    }
+  }
+
+  let normalizedTrainRefs = existing?.trainRefs ?? [];
+  if (trainRefs !== undefined) {
+    if (!Array.isArray(trainRefs)) {
+      return { error: 'trainRefsは配列である必要があります' };
+    }
+    normalizedTrainRefs = [];
+    for (let i = 0; i < trainRefs.length; i++) {
+      const ref = trainRefs[i];
+      if (typeof ref.timetableName !== 'string' || !ref.timetableName) {
+        return { error: `trainRefs[${i}].timetableNameは必須です` };
+      }
+      if (!timetableNames.has(ref.timetableName)) {
+        return { error: `trainRefs[${i}]: 時刻表が見つかりません(${ref.timetableName})` };
+      }
+      if (ref.direction !== undefined && ref.direction !== null &&
+          ref.direction !== 'kudari' && ref.direction !== 'nobori') {
+        return { error: `trainRefs[${i}].directionは'kudari'/'nobori'/nullのいずれかです` };
+      }
+      normalizedTrainRefs.push({
+        // client側が既存エントリの場合はidを維持して送ってくる(Reactのkey安定用)。
+        // 新規追加分はidを持たないので、ここで新規発行する。
+        id: ref.id ?? generateId('dtrain'),
+        timetableName: ref.timetableName,
+        direction: ref.direction ?? null,
+      });
+    }
+  }
+
+  const diagram = {
+    id: existing?.id ?? generateId('diagram'),
+    name: name.trim(),
+    tags: normalizeTags(tags),
+    lineId: lineId !== undefined ? lineId : (existing?.lineId ?? null),
+    trainRefs: normalizedTrainRefs,
+  };
+
+  return { diagram };
+}
+
+// 一覧(一覧管理パネル用に、路線名・方向別本数などのメタデータも添えて返す)
+app.get('/api/diagrams', (req, res) => {
+  const diagrams = readJsonArray(diagramFilePath());
+  const linesById = new Map(readJsonArray(lineFilePath()).map((l) => [l.id, l]));
+  const result = diagrams.map((d) => {
+    const trainRefs = d.trainRefs ?? [];
+    return {
+      id: d.id,
+      name: d.name,
+      tags: d.tags ?? [],
+      lineId: d.lineId ?? null,
+      lineName: d.lineId ? (linesById.get(d.lineId)?.name ?? '(路線が見つかりません)') : null,
+      trainCount: trainRefs.length,
+      kudariCount: trainRefs.filter((r) => r.direction === 'kudari').length,
+      noboriCount: trainRefs.filter((r) => r.direction === 'nobori').length,
+    };
+  });
+  res.json(result);
+});
+
+// 詳細(編集画面が実際のtrainRefsを読み込む用)
+app.get('/api/diagrams/:id', (req, res) => {
+  const diagrams = readJsonArray(diagramFilePath());
+  const diagram = diagrams.find((d) => d.id === req.params.id);
+  if (!diagram) {
+    res.status(404).json({ error: `ダイヤが見つかりません: ${req.params.id}` });
+    return;
+  }
+  res.json(diagram);
+});
+
+// 新規作成 or 更新(既存id指定時はupsert)
+app.post('/api/diagrams', (req, res) => {
+  const diagrams = readJsonArray(diagramFilePath());
+  const existing = req.body.id ? diagrams.find((d) => d.id === req.body.id) : null;
+
+  const lines = readJsonArray(lineFilePath());
+  let timetableNames;
+  try {
+    timetableNames = new Set(
+        fs.readdirSync(path.join(DATA_DIR, 'timetables'))
+            .filter((f) => f.endsWith('.json'))
+            .map((f) => f.replace(/\.json$/, '')),
+    );
+  } catch {
+    timetableNames = new Set();
+  }
+
+  const result = buildDiagramFromBody(req.body, existing, lines, timetableNames);
+  if (result.error) {
+    res.status(400).json({ error: result.error });
+    return;
+  }
+
+  const { diagram } = result;
+  const idx = diagrams.findIndex((d) => d.id === diagram.id);
+  if (idx >= 0) {
+    diagrams[idx] = diagram;
+  } else {
+    diagrams.push(diagram);
+  }
+  writeJsonArray(diagramFilePath(), diagrams);
+  res.json(diagram);
+});
+
+app.delete('/api/diagrams/:id', (req, res) => {
+  const diagrams = readJsonArray(diagramFilePath());
+  const idx = diagrams.findIndex((d) => d.id === req.params.id);
+  if (idx < 0) {
+    res.status(404).json({ error: `ダイヤが見つかりません: ${req.params.id}` });
+    return;
+  }
+  diagrams.splice(idx, 1);
+  writeJsonArray(diagramFilePath(), diagrams);
   res.json({ ok: true, id: req.params.id });
 });
 

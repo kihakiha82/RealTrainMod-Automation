@@ -221,7 +221,7 @@ export default function TimetableEditPanel({ stations, trainSpecs, onClose, zInd
             setDeleteConflicts((prev) => {
                 const next = { ...prev };
                 if (res.conflict) {
-                    next[name] = res.referencingUuids;
+                    next[name] = { referencingUuids: res.referencingUuids, referencingDiagrams: res.referencingDiagrams };
                 } else {
                     delete next[name];
                 }
@@ -481,7 +481,15 @@ export default function TimetableEditPanel({ stations, trainSpecs, onClose, zInd
                                         ) : (
                                             <div style={{ marginTop: 4 }}>
                                                 <div className="time-editor__error">
-                                                    列車に紐付けられているため削除できません(uuid: {conflict.join(', ')})
+                                                    {conflict.referencingUuids?.length > 0 && (
+                                                        <div>列車に紐付けられています(uuid: {conflict.referencingUuids.join(', ')})</div>
+                                                    )}
+                                                    {conflict.referencingDiagrams?.length > 0 && (
+                                                        <div>
+                                                            ダイヤから参照されています: {conflict.referencingDiagrams.map((d) => d.diagramName).join(', ')}
+                                                        </div>
+                                                    )}
+                                                    のため削除できません。
                                                 </div>
                                                 <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
                                                     <button
@@ -499,7 +507,7 @@ export default function TimetableEditPanel({ stations, trainSpecs, onClose, zInd
                                                         disabled={deletingName === item.name}
                                                         onClick={() => handleDeleteTimetable(item.name, true)}
                                                     >
-                                                        {deletingName === item.name ? '削除中...' : '強制削除(紐付け解除)'}
+                                                        {deletingName === item.name ? '削除中...' : '強制削除(紐付け・参照を解除)'}
                                                     </button>
                                                 </div>
                                             </div>

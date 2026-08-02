@@ -3,7 +3,7 @@ import Map2D from './components/Map2D';
 import TimeEditPanel from './components/windows/TimeEditPanel.jsx';
 import RouteEditPanel from './components/windows/RouteEditPanel.jsx';
 import StationEditPanel from './components/windows/StationEditPanel.jsx';
-import { fetchRails, fetchPlayerPosition, fetchTime, saveTime, fetchRouteProfile, fetchTrainSpecs,  fetchTrainAssignments, saveRoute, fetchStations, fetchRoutes, deleteRoute, fetchLines, saveLine, deleteLine } from './api';
+import { fetchRails, fetchPlayerPosition, fetchTime, saveTime, fetchRouteProfile, fetchTrainSpecs,  fetchTrainAssignments, saveRoute, fetchStations, fetchRoutes, deleteRoute, fetchLines, saveLine, deleteLine, fetchDiagrams, fetchDiagram, saveDiagram, deleteDiagram } from './api';
 import { extrapolateTime, extrapolateFullDateTime, formatDateTime } from './timeUtils';
 import { findRailRoute } from './mapEngine/railGraph';
 import SimpleStaffPanel from "./components/windows/SimpleStaffPanel.jsx";
@@ -11,6 +11,8 @@ import TimetableEditPanel from "./components/windows/TimetableEditPanel.jsx";
 import RouteManagerPanel from "./components/windows/RouteManagerPanel.jsx";
 import LineEditPanel from "./components/windows/LineEditPanel.jsx";
 import LineManagerPanel from "./components/windows/LineManagerPanel.jsx";
+import DiagramEditPanel from "./components/windows/DiagramEditPanel.jsx";
+import DiagramManagerPanel from "./components/windows/DiagramManagerPanel.jsx";
 
 export default function App() {
   const [segments,       setSegments]       = useState([]);
@@ -175,6 +177,141 @@ export default function App() {
     }
   }
 
+  // ダイヤ(Diagram、複数列車ダイヤ)編集(再編集対応)。Line/Routeと全く同じ
+  // 「Manager(一覧)+ Editor(実編集)」構成。DiagramはtimetableName参照の束ねなので、
+  // trainRefsは{ id, timetableName, direction }の配列としてそのまま状態に持つ。
+  const [diagramsList,        setDiagramsList]        = useState([]);
+  const [diagramsLoading,     setDiagramsLoading]     = useState(false);
+  const [diagramsLoadError,   setDiagramsLoadError]   = useState(null);
+  const [editingDiagramId,    setEditingDiagramId]    = useState(null);
+  const [diagramEditName,     setDiagramEditName]     = useState('');
+  const [diagramEditTagsInput,setDiagramEditTagsInput]= useState('');
+  const [diagramEditLineId,   setDiagramEditLineId]   = useState(null);
+  const [diagramEditTrainRefs, setDiagramEditTrainRefs] = useState([]);
+  const [diagramEditSaveStatus, setDiagramEditSaveStatus] = useState(null);
+  const [diagramEditSaveError,  setDiagramEditSaveError]  = useState(null);
+  const [diagramEditLoadError,  setDiagramEditLoadError]  = useState(null); // 詳細読込(fetchDiagram)失敗時
+  const [isDiagramEditActive, setIsDiagramEditActive] = useState(false);
+  const [showDiagramManager,  setShowDiagramManager]  = useState(false);
+
+  async function refreshDiagramsList() {
+    setDiagramsLoading(true);
+    setDiagramsLoadError(null);
+    try {
+      setDiagramsList(await fetchDiagrams());
+    } catch (e) {
+      setDiagramsLoadError(e.message);
+    } finally {
+      setDiagramsLoading(false);
+    }
+  }
+
+  /** ダイヤ編集: 全stateをクリアし、編集セッションを終了する */
+  function handleClearDiagramEdit() {
+    setEditingDiagramId(null);
+    setDiagramEditName('');
+    setDiagramEditTagsInput('');
+    setDiagramEditLineId(null);
+    setDiagramEditTrainRefs([]);
+    setDiagramEditSaveStatus(null);
+    setDiagramEditSaveError(null);
+    setDiagramEditLoadError(null);
+    setIsDiagramEditActive(false);
+  }
+
+  /** DiagramManagerPanelの「新規作成」から呼ばれる */
+  function handleStartNewDiagram() {
+    handleClearDiagramEdit();
+    setIsDiagramEditActive(true);
+  }
+
+  /**
+   * DiagramManagerPanelの「編集」から呼ばれる。一覧のdiagramはメタデータのみ
+   * (trainRefsを含まない)なので、詳細をfetchDiagram(id)で取得し直す。
+   */
+  async function handleLoadDiagramForEdit(diagramMeta) {
+    setDiagramEditLoadError(null);
+    try {
+      const diagram = await fetchDiagram(diagramMeta.id);
+      setEditingDiagramId(diagram.id);
+      setDiagramEditName(diagram.name ?? '');
+      setDiagramEditTagsInput((diagram.tags ?? []).join(', '));
+      setDiagramEditLineId(diagram.lineId ?? null);
+      setDiagramEditTrainRefs([...(diagram.trainRefs ?? [])]);
+      setDiagramEditSaveStatus(null);
+      setDiagramEditSaveError(null);
+      setIsDiagramEditActive(true);
+      bringToFront('diagramEditor');
+    } catch (e) {
+      setDiagramEditLoadError(e.message);
+    }
+  }
+
+  /** DiagramManagerPanelの「削除」から呼ばれる。ダイヤは他から参照されないため確認なしで削除できる */
+  async function handleDeleteDiagramFromManager(id) {
+    await deleteDiagram(id);
+    if (id === editingDiagramId) {
+      handleClearDiagramEdit();
+    }
+    await refreshDiagramsList();
+  }
+
+  function handleAddDiagramTrainRef(timetableName) {
+    setDiagramEditTrainRefs((prev) => [...prev, { id: null, timetableName, direction: null }]);
+    setDiagramEditSaveStatus(null);
+  }
+
+  function handleRemoveDiagramTrainRefAt(index) {
+    setDiagramEditTrainRefs((prev) => prev.filter((_, i) => i !== index));
+    setDiagramEditSaveStatus(null);
+  }
+
+  function handleMoveDiagramTrainRef(index, direction) {
+    setDiagramEditTrainRefs((prev) => {
+      const targetIndex = index + direction;
+      if (targetIndex < 0 || targetIndex >= prev.length) return prev;
+      const next = [...prev];
+      [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+      return next;
+    });
+    setDiagramEditSaveStatus(null);
+  }
+
+  function handleDiagramTrainRefDirectionChange(index, direction) {
+    setDiagramEditTrainRefs((prev) => prev.map((r, i) => (i === index ? { ...r, direction } : r)));
+    setDiagramEditSaveStatus(null);
+  }
+
+  /** ダイヤ編集: editingDiagramIdがあればbodyにidを含めてupsert(=既存を上書き更新)にする */
+  async function handleSaveDiagramEdit() {
+    if (!diagramEditName.trim()) return;
+    setDiagramEditSaveStatus('saving');
+    setDiagramEditSaveError(null);
+    try {
+      const tags = diagramEditTagsInput.split(',').map((t) => t.trim()).filter(Boolean);
+      const saved = await saveDiagram({
+        id: editingDiagramId ?? undefined,
+        name: diagramEditName.trim(),
+        tags,
+        lineId: diagramEditLineId,
+        trainRefs: diagramEditTrainRefs.map((r) => ({
+          id: r.id ?? undefined,
+          timetableName: r.timetableName,
+          direction: r.direction ?? null,
+        })),
+      });
+      setEditingDiagramId(saved.id);
+      // サーバーが発行したtrainRefsのid(新規追加分)を反映しておく
+      // (再度保存した時に同じ列車が重複追加されるのを防ぐ)。
+      setDiagramEditTrainRefs([...(saved.trainRefs ?? [])]);
+      setDiagramEditSaveStatus('saved');
+      await refreshDiagramsList();
+    } catch (e) {
+      setDiagramEditSaveStatus('error');
+      setDiagramEditSaveError(e.message);
+    }
+  }
+
   async function refreshRoutesList() {
     setRoutesLoading(true);
     setRoutesLoadError(null);
@@ -249,6 +386,8 @@ export default function App() {
     timetableEditor: 100,
     lineManager: 100,
     lineEditor: 100,
+    diagramManager: 100,
+    diagramEditor: 100,
   });
 
   //windowを最前面に持ってくる
@@ -889,6 +1028,12 @@ export default function App() {
     refreshLinesList();
   }, []);
 
+  // ── ダイヤ(Diagram)一覧(ダイヤ管理パネルの一覧表示用)。1回だけ取得し、
+  // 以後は保存・削除のたびにrefreshDiagramsList呼び出しで更新する ──
+  useEffect(() => {
+    refreshDiagramsList();
+  }, []);
+
   // ── 車両データ(trainspecs)の取得。簡易スタフの車両選択に使う。1回だけでよい ──
   useEffect(() => {
     let cancelled = false;
@@ -993,6 +1138,13 @@ export default function App() {
                 onClick={() => setShowLineManager((v) => !v)}
             >
               🚋 路線編集
+            </button>
+
+            <button
+                className={`mode-btn${showDiagramManager ? ' is-active' : ''}`}
+                onClick={() => setShowDiagramManager((v) => !v)}
+            >
+              📊 ダイヤ管理
             </button>
           </div>
         </header>
@@ -1169,6 +1321,45 @@ export default function App() {
                     onClose={handleClearLineEdit}
                     zIndex={windowZIndices.lineEditor}
                     onFocus={() => bringToFront('lineEditor')}
+                />
+            )}
+            {showDiagramManager && (
+                <DiagramManagerPanel
+                    diagrams={diagramsList}
+                    editingDiagramId={editingDiagramId}
+                    isLoading={diagramsLoading}
+                    loadError={diagramsLoadError}
+                    editLoadError={diagramEditLoadError}
+                    onRefresh={refreshDiagramsList}
+                    onNew={handleStartNewDiagram}
+                    onEdit={handleLoadDiagramForEdit}
+                    onDelete={handleDeleteDiagramFromManager}
+                    onClose={() => setShowDiagramManager(false)}
+                    zIndex={windowZIndices.diagramManager}
+                    onFocus={() => bringToFront('diagramManager')}
+                />
+            )}
+            {isDiagramEditActive && (
+                <DiagramEditPanel
+                    trainRefs={diagramEditTrainRefs}
+                    name={diagramEditName}
+                    tagsInput={diagramEditTagsInput}
+                    lineId={diagramEditLineId}
+                    onNameChange={setDiagramEditName}
+                    onTagsInputChange={setDiagramEditTagsInput}
+                    onLineIdChange={setDiagramEditLineId}
+                    onAddTrainRef={handleAddDiagramTrainRef}
+                    onRemoveTrainRefAt={handleRemoveDiagramTrainRefAt}
+                    onMoveTrainRef={handleMoveDiagramTrainRef}
+                    onDirectionChange={handleDiagramTrainRefDirectionChange}
+                    isEditing={editingDiagramId != null}
+                    saveStatus={diagramEditSaveStatus}
+                    saveError={diagramEditSaveError}
+                    onSave={handleSaveDiagramEdit}
+                    onClear={handleClearDiagramEdit}
+                    onClose={handleClearDiagramEdit}
+                    zIndex={windowZIndices.diagramEditor}
+                    onFocus={() => bringToFront('diagramEditor')}
                 />
             )}
             {isRouteEditActive && (

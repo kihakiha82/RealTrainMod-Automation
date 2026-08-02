@@ -93,16 +93,22 @@ export async function saveTimetable(name, data) {
 }
 
 /**
- * 時刻表を削除する。列車に紐付けられている場合はデフォルトでは409を返す
- * (deleteRoute/deleteStationと同じ「警告付き強制削除」パターン)。
- * 戻り値: { conflict: true, referencingUuids } | { conflict: false, ok, name, unassignedUuids }
+ * 時刻表を削除する。列車に紐付けられている、または他のダイヤ(複数列車ダイヤ)から
+ * 参照されている場合はデフォルトでは409を返す(deleteRoute/deleteStationと同じ
+ * 「警告付き強制削除」パターン)。
+ * 戻り値: { conflict: true, referencingUuids, referencingDiagrams } |
+ *         { conflict: false, ok, name, unassignedUuids, updatedDiagrams }
  */
 export async function deleteTimetable(name, { force = false } = {}) {
   const url = `/api/timetables/${encodeURIComponent(name)}${force ? '?force=true' : ''}`;
   const res = await fetch(url, { method: 'DELETE' });
   const body = await res.json().catch(() => ({}));
   if (res.status === 409) {
-    return { conflict: true, referencingUuids: body.referencingUuids ?? [] };
+    return {
+      conflict: true,
+      referencingUuids: body.referencingUuids ?? [],
+      referencingDiagrams: body.referencingDiagrams ?? [],
+    };
   }
   if (!res.ok) {
     throw new Error(body.error || `時刻表の削除に失敗しました (HTTP ${res.status})`);
@@ -302,6 +308,51 @@ export async function deleteLine(id) {
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || `路線の削除に失敗しました (HTTP ${res.status})`);
+  }
+  return res.json();
+}
+
+/**
+ * ダイヤ(Diagram、複数列車ダイヤ)一覧を取得する(メタデータ付き: 路線名・方向別本数)。
+ * 実際の列車ごとの着発時刻はTimetableが持っており、DiagramはtimetableName参照の
+ * 束ねであるだけなので、詳細な内容が要る場合はfetchDiagram(id)を使う。
+ */
+export async function fetchDiagrams() {
+  const res = await fetch('/api/diagrams');
+  if (!res.ok) throw new Error(`ダイヤ一覧の取得に失敗しました (HTTP ${res.status})`);
+  return res.json();
+}
+
+/** ダイヤの詳細(trainRefsを含む全体)を取得する */
+export async function fetchDiagram(id) {
+  const res = await fetch(`/api/diagrams/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error(`ダイヤの取得に失敗しました (HTTP ${res.status})`);
+  return res.json();
+}
+
+/**
+ * ダイヤを新規作成/更新(upsert)する。既存を更新する場合はbody.idを含めること。
+ * body: { id?, name, tags?, lineId?, trainRefs?: { id?, timetableName, direction?: 'kudari'|'nobori'|null }[] }
+ */
+export async function saveDiagram(body) {
+  const res = await fetch('/api/diagrams', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.error || `ダイヤの保存に失敗しました (HTTP ${res.status})`);
+  }
+  return res.json();
+}
+
+/** ダイヤを削除する。ダイヤは他のどのエンティティからも参照されないため確認なしで削除できる。 */
+export async function deleteDiagram(id) {
+  const res = await fetch(`/api/diagrams/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `ダイヤの削除に失敗しました (HTTP ${res.status})`);
   }
   return res.json();
 }
