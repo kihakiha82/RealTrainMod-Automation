@@ -14,6 +14,7 @@ import LineManagerPanel from "./components/windows/LineManagerPanel.jsx";
 import DiagramEditPanel from "./components/windows/DiagramEditPanel.jsx";
 import DiagramManagerPanel from "./components/windows/DiagramManagerPanel.jsx";
 import {TimetablePanel} from "./components/windows/TimetablePanel.jsx";
+import { deriveStationSlots } from './routeStationSlots.js';
 
 export default function App() {
   const [segments,       setSegments]       = useState([]);
@@ -684,6 +685,51 @@ export default function App() {
     bringToFront('routePanel');
   }
 
+  // 系統ツリーの「下り時刻表」表示用。TimetablePanel(OuDiaSecond風の見た目のみ、
+  // 列車データはまだ空)を系統ごとに開けるようにする。同じ系統を複数回開いても
+  // 増えないよう、系統id+方向をkeyにして管理する(上りは追記1のとおり今は未対応)。
+  // { key, routeId, routeName, stations }[]
+  const [openTimetablePanels, setOpenTimetablePanels] = useState([]);
+
+  /**
+   * 系統(Route)のwaypointsから、TimetablePanelが要求する形の駅リスト
+   * ({ id, name, hasTrack, hasDep, hasArr }[])を、系統に含まれる駅の順序どおりに作る。
+   * 列車データがまだ無いため着発パターンは仮の規則: 始発駅は発のみ、終着駅は着のみ、
+   * 中間駅は着発両方(番線は今回のスコープ外なのでhasTrack=falseで統一)。
+   */
+  function getRouteStationsForTimetable(route) {
+    const slots = deriveStationSlots(route.waypoints);
+    return slots.map((slot) => {
+      const station = mapStations.find((s) => s.id === slot.stationId);
+      return {
+        id: slot.stationId,
+        name: station?.name ?? '(不明な駅)',
+        hasTrack: false,
+        hasArr: slot.kind !== 'origin',
+        hasDep: slot.kind !== 'terminal',
+      };
+    });
+  }
+
+  /** 系統ツリーの「下り時刻表」クリックから呼ばれる。既に開いていれば前面に出すだけ */
+  function handleOpenDownTimetable(route) {
+    const key = `timetable_${route.id}_kudari`;
+    setOpenTimetablePanels((prev) => {
+      if (prev.some((p) => p.key === key)) return prev;
+      return [...prev, {
+        key,
+        routeId: route.id,
+        routeName: route.name,
+        stations: getRouteStationsForTimetable(route),
+      }];
+    });
+    bringToFront(key);
+  }
+
+  function handleCloseTimetablePanel(key) {
+    setOpenTimetablePanels((prev) => prev.filter((p) => p.key !== key));
+  }
+
   /**
    * 系統管理パネルの「削除」ボタンから呼ばれる。deleteRoute()の結果(409競合の場合は
    * { conflict: true, referencingTimetables }、成功時は{ conflict: false, ... })を
@@ -1172,7 +1218,26 @@ export default function App() {
                   >
                     <span className="tree-icon"></span> 系統一覧
                   </div>
-
+                  {routesList.map((route) => (
+                      <details key={route.id} open>
+                        <summary
+                            className={`tree-item ${editingRouteId === route.id ? 'is-selected' : ''}`}
+                            title={route.name}
+                        >
+                          <span className="tree-icon" style={{ color: 'greenyellow' }}>R</span> {route.name}
+                        </summary>
+                        <div className="tree-children">
+                          <div className="tree-item" onClick={() => handleLoadRouteForEdit(route)}><span className="tree-icon">✏️</span> 系統の編集</div>
+                          <div className="tree-item" onClick={() => handleOpenDownTimetable(route)}><span className="tree-icon">🕒</span> 下り時刻表</div>
+                          <div className="tree-item"><span className="tree-icon">🕒</span> 上り時刻表</div>
+                          <div className="tree-item"><span className="tree-icon">📉</span> ダイヤグラム</div>
+                          <div className="tree-item"><span className="tree-icon">🕒</span> 下りカスタマイズ時刻表</div>
+                          <div className="tree-item"><span className="tree-icon">🕒</span> 上りカスタマイズ時刻表</div>
+                          <div className="tree-item"><span className="tree-icon">🚉</span> 駅時刻表</div>
+                          <div className="tree-item"><span className="tree-icon">📋</span> 運用一覧表</div>
+                        </div>
+                      </details>
+                  ))}
                 </div>
 
               </details>
@@ -1429,10 +1494,18 @@ export default function App() {
                 />
             )}
 
-            <TimetablePanel
-                onFocus={() => bringToFront('timetablePanel')}
-
-            />
+            {openTimetablePanels.map((panel, i) => (
+                <TimetablePanel
+                    key={panel.key}
+                    title={`${panel.routeName} 下り時刻表`}
+                    stations={panel.stations}
+                    trains={[]}
+                    defaultPos={{ x: 60 + i * 24, y: 60 + i * 24, width: 1000, height: 620 }}
+                    onClose={() => handleCloseTimetablePanel(panel.key)}
+                    onFocus={() => bringToFront(panel.key)}
+                    zIndex={windowZIndices[panel.key]}
+                />
+            ))}
           </main>
         </div>
 
