@@ -13,6 +13,7 @@ import LineEditPanel from "./components/windows/LineEditPanel.jsx";
 import LineManagerPanel from "./components/windows/LineManagerPanel.jsx";
 import DiagramEditPanel from "./components/windows/DiagramEditPanel.jsx";
 import DiagramManagerPanel from "./components/windows/DiagramManagerPanel.jsx";
+import {TimetablePanel} from "./components/windows/TimetablePanel.jsx";
 
 export default function App() {
   const [segments,       setSegments]       = useState([]);
@@ -1428,6 +1429,10 @@ export default function App() {
                 />
             )}
 
+            <TimetablePanel
+                onFocus={() => bringToFront('timetablePanel')}
+
+            />
           </main>
         </div>
 
