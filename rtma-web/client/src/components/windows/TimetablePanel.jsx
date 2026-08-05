@@ -1,5 +1,5 @@
 // TimetablePanel.jsx
-import React, { useRef, useState, useCallback, useEffect } from 'react';
+import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import { Window } from '../Window';
 import {
     stations as REAL_STATIONS,
@@ -36,6 +36,19 @@ function buildStationSubRows(station) {
 
 const SUB_ROW_LABEL = { track: '番線', dep: '発', arr: '着' };
 
+/**
+ * ダイヤ表示エリアの一番右に常に1本だけ表示する「空列車」列。
+ * 右クリックで新規列車を追加する方式ではなく、この空列のセルを直接クリックすることが
+ * そのまま新規列車の時刻編集の入り口になる(handleCellMouseDown参照)。
+ * timesを空オブジェクトにしておくことで、どの駅の行も自動的に「・・」(未入力)表示になる。
+ */
+const EMPTY_TRAIN = {
+    id: '__empty__',
+    trainNo: '', duty: '', type: '', name: '', number: '',
+    startStation: '', startWork: '', endStation: '', endWork: '',
+    times: {},
+};
+
 const META_ROWS = [
     { key: 'trainNo', label: '列車番号' },
     { key: 'duty', label: '運用番号' },
@@ -67,6 +80,7 @@ const HeaderCell = React.memo(function HeaderCell({
                                                       content,
                                                       typeClassName,
                                                       isSelected,
+                                                      isEmptyCol,
                                                       onMouseDown,
                                                       onMouseEnter,
                                                   }) {
@@ -80,12 +94,15 @@ const HeaderCell = React.memo(function HeaderCell({
         (metaKey === 'trainNo' ? ' tt-train-no' : '') +
         (metaKey === 'number' ? ' tt-number-cell' : '') +
         (metaKey === 'startStation' || metaKey === 'endStation' ? ' tt-overflow-cell' : '') +
-        (isSelected ? ' tt-col-selected' : '');
+        (isSelected ? ' tt-col-selected' : '') +
+        (isEmptyCol ? ' tt-empty-col' : '');
 
     return (
         <th className={className} onMouseDown={handleDown} onMouseEnter={handleEnter}>
             <div className="tt-cell-inner">
-                {metaKey === 'name' ? (
+                {isEmptyCol && metaKey === 'trainNo' ? (
+                    <span className="tt-empty-col-hint" title="この列のセルをクリックすると新しい列車の時刻編集を開始します"></span>
+                ) : metaKey === 'name' ? (
                     content
                         ?.split('\n')
                         .map((line, li) => <div key={li}>{line}</div>)
@@ -112,6 +129,7 @@ const TimeCell = React.memo(function TimeCell({
                                                   typeClassName,
                                                   isCellSelected,
                                                   isColSelected,
+                                                  isEmptyCol,
                                                   onMouseDown,
                                                   onMouseEnter,
                                               }) {
@@ -126,7 +144,8 @@ const TimeCell = React.memo(function TimeCell({
         (value === 'ﾚ' || value === 'レ' ? ' tt-cell-pass' : '') +
         (value ? ' ' + (typeClassName || '') : ' tt-empty') +
         (isCellSelected ? ' tt-cell-selected' : '') +
-        (isColSelected ? ' tt-col-selected' : '');
+        (isColSelected ? ' tt-col-selected' : '') +
+        (isEmptyCol ? ' tt-empty-col' : '');
 
     return (
         <td className={className} onMouseDown={handleDown} onMouseEnter={handleEnter}>
@@ -152,6 +171,10 @@ export function TimetablePanel({
                                }) {
     const stations = stationsProp || REAL_STATIONS;
     const trains = trainsProp || REAL_TRAINS;
+    // ダイヤ表示エリアの一番右に、常に1本だけ空列車列を追加する。
+    // このEMPTY_TRAINは実データではなく表示専用(新規列車追加はここをクリックする入口)。
+    const displayTrains = useMemo(() => [...trains, EMPTY_TRAIN], [trains]);
+    const emptyColIndex = trains.length;
 
     // 選択状態
     // selectedCells: Set<"rowKey|colIndex">   … セル単位の選択(縦方向の範囲を含む)
@@ -220,6 +243,14 @@ export function TimetablePanel({
     // --- 時刻セル(番線・発・着)操作 ---
     const handleCellMouseDown = useCallback((rowKey, colIndex, e) => {
         e.preventDefault();
+
+        if (colIndex === emptyColIndex) {
+            // 時刻編集への入り口としてのログ出力（今後の実装用）
+            console.log('[TimetablePanel] 空列車セルの編集を開始:', { rowKey, colIndex });
+            // return; を削除して、下の選択処理へ進ませる
+        }
+
+        // これ以降の処理が空列車列でも実行されるようになる
         dragRef.current = {
             active: true,
             mode: 'cell',
@@ -228,7 +259,7 @@ export function TimetablePanel({
         };
         setSelectedCells(new Set([`${rowKey}|${colIndex}`]));
         setSelectedColumns(new Set());
-    }, []);
+    }, [emptyColIndex]);
 
     const handleCellMouseEnter = useCallback(
         (rowKey, colIndex) => {
@@ -266,7 +297,7 @@ export function TimetablePanel({
                     <colgroup>
                         <col className="tt-col-label-major" />
                         <col className="tt-col-label-minor" />
-                        {trains.map((t) => (
+                        {displayTrains.map((t) => (
                             <col key={t.id} className="tt-col-time" />
                         ))}
                     </colgroup>
@@ -281,7 +312,7 @@ export function TimetablePanel({
                                     rowSpan={META_ROWS.length}
                                 />
                             )}
-                            {trains.map((train, colIndex) => (
+                            {displayTrains.map((train, colIndex) => (
                                 <HeaderCell
                                     key={train.id}
                                     colIndex={colIndex}
@@ -289,6 +320,7 @@ export function TimetablePanel({
                                     content={train[meta.key]}
                                     typeClassName={(TRAIN_TYPES[train.type] || {}).className}
                                     isSelected={isColSelected(colIndex)}
+                                    isEmptyCol={colIndex === emptyColIndex}
                                     onMouseDown={handleHeaderMouseDown}
                                     onMouseEnter={handleHeaderMouseEnter}
                                 />
@@ -319,7 +351,7 @@ export function TimetablePanel({
                                         </td>
                                     )}
                                     <td className="tt-sub-label">{SUB_ROW_LABEL[sub]}</td>
-                                    {trains.map((train, colIndex) => (
+                                    {displayTrains.map((train, colIndex) => (
                                         <TimeCell
                                             key={train.id}
                                             rowKey={rowKey}
@@ -329,6 +361,7 @@ export function TimetablePanel({
                                             typeClassName={(TRAIN_TYPES[train.type] || {}).className}
                                             isCellSelected={isCellSelected(rowKey, colIndex)}
                                             isColSelected={isColSelected(colIndex)}
+                                            isEmptyCol={colIndex === emptyColIndex}
                                             onMouseDown={handleCellMouseDown}
                                             onMouseEnter={handleCellMouseEnter}
                                         />

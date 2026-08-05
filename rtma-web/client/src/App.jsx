@@ -1216,7 +1216,7 @@ export default function App() {
                       className={`tree-item ${activeView === 'route' ? 'is-selected' : ''}`}
                       onClick={() => setShowRouteManager((v) => !v)}
                   >
-                    <span className="tree-icon"></span> 系統一覧
+                    <span className="tree-icon" style={{ color: 'greenyellow' }}>Ra</span> 系統一覧
                   </div>
                   {routesList.map((route) => (
                       <details key={route.id} open>
