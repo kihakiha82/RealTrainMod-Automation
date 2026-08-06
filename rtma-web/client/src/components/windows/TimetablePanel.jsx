@@ -6,14 +6,17 @@ import {
     stations as REAL_STATIONS,
     trains as REAL_TRAINS,
 } from './timetableData';
+import { parseOud2 } from './oud2Parser';
 import './TimetablePanel.css';
 
 const EMPTY_ENTRY = {};
 // ------------------------------------------------------------------
 // 実データ(米倉鉄道 江乃原線 下り時刻表)は timetableData.js から読み込む。
-// stations: [{ id, name, hasTrack, hasDep, hasArr }, ...]
+// stations: [{ id, name, hasTrack, hasDep, hasArr, displayType }, ...]
 // trains:   [{ id, trainNo, duty, type, name, startStation, startWork,
 //              endStation, endWork, times: { [stationId]: { track, dep, arr } } }, ...]
+//
+// .oud2 ファイルを直接読み込んで置き換えることもできる(oud2Parser.js 参照)。
 // ------------------------------------------------------------------
 
 const TRAIN_TYPES = {
@@ -267,17 +270,25 @@ const TimeCell = React.memo(function TimeCell({
             return str.substring(0, 4) + "00";
 
         }
-        // 秒表示OFF かつ 6桁以上の場合は、最初の4桁（時分）だけ切り出して表示
+        // 秒表示OFF かつ 6桁以上の場合は、最初の4桁(時分)だけ切り出して表示
         if (!showSeconds && str.length >= 6) {
             return str.substring(0, 4);
         }
         return str;
     };
 
-    let displayValue = value;
-    if (sub === 'arr') displayValue = formatTimeDisplay(entry.arr, showSeconds); // 関数を通す
-    if (sub === 'dep') displayValue = formatTimeDisplay(entry.dep, showSeconds); // 関数を通す
-    if (sub === 'track') displayValue = entry.track || '';
+    let displayValue;
+    if (entry.pass) {
+        displayValue = sub === 'track' ? '' : 'ﾚ';
+    } else if (sub === 'arr') {
+        displayValue = formatTimeDisplay(entry.arr, showSeconds);
+    } else if (sub === 'dep') {
+        displayValue = formatTimeDisplay(entry.dep, showSeconds);
+    } else if (sub === 'track') {
+        displayValue = entry.track || '';
+    } else {
+        displayValue = value;
+    }
 
 
     return (
@@ -306,9 +317,56 @@ export function TimetablePanel({
                                    zIndex = 10,
                                    defaultPos = { x: 60, y: 60, width: 1000, height: 620 },
                                }) {
-    const stations = stationsProp || REAL_STATIONS;
+    // --- .oud2 ファイル読み込み(ブラウザ側で即パース→即反映) ---
+    // customData: { kudari: {stations, trains} | null, nobori: {stations, trains} | null } | null
+    const [customData, setCustomData] = useState(null);
+    const [direction, setDirection] = useState('kudari');
+    const [loadedFileName, setLoadedFileName] = useState('');
+    const [loadError, setLoadError] = useState(null);
+
+    const activeParsed = customData ? customData[direction] : null;
+    const stations = activeParsed?.stations || stationsProp || REAL_STATIONS;
+
     const [trainList, setTrainList] = useState(() => trainsProp || REAL_TRAINS);
 
+    // customData(読み込んだファイル)や方向(下り/上り)が変わったら、
+    // 編集中の trainList をその方向の列車データで丸ごと置き換える。
+    // (既存データへの手編集は、新しいファイルを読み込んだ時点で破棄される)
+    useEffect(() => {
+        if (!activeParsed) return;
+        setTrainList(activeParsed.trains);
+        setSelectedCells(new Set());
+        setSelectedColumns(new Set());
+        setEditingCell(null);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeParsed]);
+
+    const handleFileSelected = useCallback((e) => {
+        const file = e.target.files && e.target.files[0];
+        // 同じファイルを選び直しても onChange が発火するようにしておく
+        e.target.value = '';
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = () => {
+            try {
+                const parsed = parseOud2(String(reader.result));
+                setCustomData(parsed);
+                setDirection(parsed.kudari ? 'kudari' : 'nobori');
+                setLoadedFileName(file.name);
+                setLoadError(null);
+            } catch (err) {
+                console.error(err);
+                setLoadError(err.message || 'ファイルの解析に失敗しました');
+            }
+        };
+        reader.onerror = () => setLoadError('ファイルの読み込みに失敗しました');
+        reader.readAsText(file, 'utf-8');
+    }, []);
+
+    const displayTitle = customData
+        ? `${direction === 'kudari' ? '下り' : '上り'}時刻表 - ${loadedFileName}`
+        : title;
 
     // 編集中のセル情報を保持する State。
     // { train, stationId, arr, dep, anchorRect } | null
@@ -389,7 +447,7 @@ export function TimetablePanel({
         e.preventDefault();
 
         if (colIndex === emptyColIndex) {
-            // 時刻編集への入り口としてのログ出力（今後の実装用）
+            // 時刻編集への入り口としてのログ出力(今後の実装用)
             console.log('[TimetablePanel] 空列車セルの編集を開始:', { rowKey, colIndex });
             // return; せず、下の選択処理へそのまま進める(選択自体は通常どおり行う)
         }
@@ -488,7 +546,7 @@ export function TimetablePanel({
 
     return (
         <Window
-            title={title}
+            title={displayTitle}
             onClose={onClose}
             isActive={isActive}
             isOpen={isOpen}
@@ -497,7 +555,7 @@ export function TimetablePanel({
             defaultPos={defaultPos}
         >
             <div className="tt-scroll">
-                <div style={{ marginBottom: '8px' }}>
+                <div style={{ marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
                     <label>
                         <input
                             type="checkbox"
@@ -506,6 +564,47 @@ export function TimetablePanel({
                         />
                         秒を表示する
                     </label>
+
+                    {/* --- .oud2 読み込みツールバー ---
+                        ブラウザ側で FileReader により直接読み込み、oud2Parser.js でパースして
+                        その場で stations/trains を差し替える。サーバーへの送信は行わない。 */}
+                    <label style={{ fontSize: '12px', cursor: 'pointer' }}>
+                        <input
+                            type="file"
+                            accept=".oud2"
+                            onChange={handleFileSelected}
+                            style={{ display: 'none' }}
+                        />
+                        <span style={{ border: '1px solid #999', borderRadius: '3px', padding: '2px 8px' }}>
+                            .oud2を読み込む
+                        </span>
+                    </label>
+
+                    {customData && customData.kudari && customData.nobori && (
+                        <label style={{ fontSize: '12px' }}>
+                            方向:
+                            <select
+                                value={direction}
+                                onChange={(e) => setDirection(e.target.value)}
+                                style={{ marginLeft: '4px' }}
+                            >
+                                <option value="kudari">下り</option>
+                                <option value="nobori">上り</option>
+                            </select>
+                        </label>
+                    )}
+
+                    {customData && !loadError && (
+                        <span style={{ fontSize: '12px', color: '#555' }}>
+                            {loadedFileName} を読み込み済み(列車 {trainList.length} 本)
+                        </span>
+                    )}
+
+                    {loadError && (
+                        <span style={{ fontSize: '12px', color: '#c00' }}>
+                            読み込みエラー: {loadError}
+                        </span>
+                    )}
                 </div>
                 <table className="tt-table">
                     <colgroup>
