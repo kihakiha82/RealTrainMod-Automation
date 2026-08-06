@@ -188,3 +188,95 @@
     font-style: italic;
 }
 
+/* 一番右に常に表示される「空列車」列。新規列車の時刻編集の入口であることが
+   視覚的にわかるよう、罫線と背景を変える。
+   【注意】このファイルの他のルールと同様、.tt-table 配下でクラスを重ねて指定しないと、
+   ベースの `.tt-table th, .tt-table td` (border-right/left指定)より詳細度が低くなり
+   上書きできない(実際にこれで最初は見た目が変わらないバグになっていた)。 */
+.tt-table .tt-empty-col {
+    border-left: 2px dashed #e0b060;
+    background-color: #fff8ea;
+}
+
+.tt-table td.tt-empty-col.tt-time-cell {
+    cursor: cell;
+}
+
+/* 空列車列の一番上(列車番号の行)に「+」を出し、クリックすると新規列車を
+   追加できる列だと分かるようにする */
+.tt-table .tt-empty-col-hint {
+    color: #e0a030;
+    font-weight: bold;
+    font-size: 14px;
+}
+
+/* ------------------------------------------------------------------
+ * 時刻入力ポップアップ(TimeInputModal)
+ * ダブルクリックしたセルの真上に出るポップオーバー。汎用のWindowコンポーネントは
+ * 使わず、position:fixed + セルのgetBoundingClientRect()で直接配置している。
+ * ------------------------------------------------------------------ */
+
+/* 画面全体を覆う透明な受け皿。ここをクリックするとポップアップを閉じる
+   (表全体を暗くしたくないのでbackgroundは透明のまま)。 */
+.tt-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9998;
+    background: transparent;
+}
+
+.tt-modal-popover {
+    position: fixed;
+    /* leftはセルの左端、topはセルの上端の値をそのまま渡している。
+       ポップアップ自身の高さぶん上にずらし(-100%)、さらに8pxの隙間を空けることで、
+       ポップアップの下端がセルの少し上に来るようにする(JS側で高さを計算しなくて済む)。 */
+    transform: translateY(calc(-100% - 8px));
+    background: #fff;
+    color: #222;
+    border: 1px solid #999;
+    border-radius: 4px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+    padding: 10px 12px;
+    z-index: 9999;
+    min-width: 190px;
+    font-size: 13px;
+}
+
+.tt-modal-title {
+    font-weight: bold;
+    margin-bottom: 8px;
+    white-space: nowrap;
+}
+
+.tt-modal-fields {
+    display: flex;
+    gap: 10px;
+}
+
+.tt-modal-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 11px;
+    color: #666;
+}
+
+.tt-modal-field input {
+    width: 70px;
+    font-size: 14px;
+    padding: 3px 4px;
+    box-sizing: border-box;
+}
+
+.tt-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.tt-modal-actions button {
+    font-size: 12px;
+    padding: 3px 10px;
+    cursor: pointer;
+}

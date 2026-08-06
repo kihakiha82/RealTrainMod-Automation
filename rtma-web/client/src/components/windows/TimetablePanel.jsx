@@ -1,5 +1,6 @@
 // TimetablePanel.jsx
 import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { Window } from '../Window';
 import {
     stations as REAL_STATIONS,
@@ -8,8 +9,6 @@ import {
 import './TimetablePanel.css';
 
 const EMPTY_ENTRY = {};
-const DEFAULT_TYPE = {};
-
 // ------------------------------------------------------------------
 // 実データ(米倉鉄道 江乃原線 下り時刻表)は timetableData.js から読み込む。
 // stations: [{ id, name, hasTrack, hasDep, hasArr }, ...]
@@ -29,11 +28,26 @@ const TRAIN_TYPES = {
 };
 
 // 番線は着発の間に表示する: hasDep→dep, hasTrack→track, hasArr→arr の順に積む
-function buildStationSubRows(station) {
+function buildStationSubRows(station, isLast) {
     const rows = [];
-    if (station.hasArr) rows.push('arr');
-    if (station.hasTrack) rows.push('track');
-    if (station.hasDep) rows.push('dep');
+
+    // routeStationSlots 側から渡ってくる想定のプロパティ
+    // 指定がない場合は、最後の駅は 'arr_only'、それ以外は 'dep_only' とする
+    const displayType = station.displayType || (isLast ? 'arr_only' : 'dep_only');
+
+    if (displayType === 'arr_only' || displayType === 'arr_dep') {
+        rows.push('arr');
+    }
+
+    // 番線の有無は今回のスコープ外のためそのまま
+    if (station.hasTrack) {
+        rows.push('track');
+    }
+
+    if (displayType === 'dep_only' || displayType === 'arr_dep') {
+        rows.push('dep');
+    }
+
     return rows;
 }
 
@@ -71,35 +85,79 @@ function setsEqual(a, b) {
     return true;
 }
 
-function TimeInputModal({ cellInfo, onSave, onClose }) {
-    const [value, setValue] = useState(cellInfo.currentValue || '');
+/**
+ * 時刻入力ポップアップ。
+ *
+ * 【今回の変更点】
+ * 1. 発/着を別ウィンドウにせず、同じ駅・同じ列車の着時刻/発時刻を1つのポップアップで
+ *    まとめて入力できるようにした(番線は今回のスコープ外のまま)。
+ * 2. 汎用のWindowコンポーネント(ドラッグ可能な独立ウィンドウ)を使うのをやめ、
+ *    ダブルクリックしたセルの真上に来るよう、そのセルのgetBoundingClientRect()を
+ *    基準に position:fixed で直接配置するポップオーバーにした。
+ *    Windowは「デフォルト位置に浮かぶ独立ウィンドウ」を想定したコンポーネントで、
+ *    セルの位置に正確に追従させる用途には合わないため。
+ *
+ * anchorRect: ダブルクリックされたセルのgetBoundingClientRect()の結果
+ * (left/top/width/height の値だけを渡ってきたプレーンオブジェクトとして保持)。
+ * ポップアップの左下端がセルの左上端の少し上に来るよう、CSS側でtranslateY(-100%)している
+ * (ポップアップ自体の高さをJS側で事前に知らなくて済むようにするため)。
+ *
+ * 【重要】このコンポーネントの外側(TimetablePanel)はWindow(react-rndの<Rnd>)の中に
+ * あり、<Rnd>は位置決めにCSSのtransformを使っている。transformを持つ祖先の内側で
+ * position:fixedを使うと、それは画面(ビューポート)ではなくその祖先が基準点になってしまい、
+ * getBoundingClientRect()で取ったビューポート基準の座標とズレる。そのため
+ * createPortal()でdocument.body直下に描画し、Rndの外に出すことでこれを回避している。
+ */
+function TimeInputModal({ cellInfo, stationName, onSave, onClose }) {
+    const [arrValue, setArrValue] = useState(cellInfo.arr || '');
+    const [depValue, setDepValue] = useState(cellInfo.dep || '');
 
     const handleSubmit = (e) => {
         e.preventDefault();
-        onSave(value);
+        onSave({ arr: arrValue, dep: depValue });
     };
 
-    const labelName = SUB_ROW_LABEL[cellInfo.sub] || '';
+    const { anchorRect } = cellInfo;
 
-    return (
+    return createPortal(
         <div className="tt-modal-overlay" onClick={onClose}>
-            <div className="tt-modal-content" onClick={(e) => e.stopPropagation()}>
-                <h3>{labelName} の入力</h3>
+            <div
+                className="tt-modal-popover"
+                style={{ left: anchorRect.left, top: anchorRect.top }}
+                onClick={(e) => e.stopPropagation()}
+            >
+                <div className="tt-modal-title">{stationName} の時刻入力</div>
                 <form onSubmit={handleSubmit}>
-                    <input
-                        type="text"
-                        value={value}
-                        onChange={(e) => setValue(e.target.value)}
-                        placeholder={cellInfo.sub === 'track' ? '例: 1' : '例: 1205'}
-                        autoFocus
-                    />
+                    <div className="tt-modal-fields">
+                        <label className="tt-modal-field">
+                            <span>着</span>
+                            <input
+                                type="text"
+                                value={arrValue}
+                                onChange={(e) => setArrValue(e.target.value)}
+                                placeholder="例: 1205"
+                                autoFocus={cellInfo.clickedSub === 'arr'}
+                            />
+                        </label>
+                        <label className="tt-modal-field">
+                            <span>発</span>
+                            <input
+                                type="text"
+                                value={depValue}
+                                onChange={(e) => setDepValue(e.target.value)}
+                                placeholder="例: 1206"
+                                autoFocus={cellInfo.clickedSub === 'dep'}
+                            />
+                        </label>
+                    </div>
                     <div className="tt-modal-actions">
-                        <button type="submit">保存</button>
                         <button type="button" onClick={onClose}>キャンセル</button>
+                        <button type="submit">OK</button>
                     </div>
                 </form>
             </div>
-        </div>
+        </div>,
+        document.body
     );
 }
 
@@ -137,7 +195,7 @@ const HeaderCell = React.memo(function HeaderCell({
         <th className={className} onMouseDown={handleDown} onMouseEnter={handleEnter}>
             <div className="tt-cell-inner">
                 {isEmptyCol && metaKey === 'trainNo' ? (
-                    <span className="tt-empty-col-hint" title="この列のセルをクリックすると新しい列車の時刻編集を開始します"></span>
+                    <span className="tt-empty-col-hint" title="この列のセルをクリックすると新しい列車の時刻編集を開始します">＋</span>
                 ) : metaKey === 'name' ? (
                     content
                         ?.split('\n')
@@ -171,13 +229,24 @@ const TimeCell = React.memo(function TimeCell({
                                                   onDoubleClick,
                                                   stationId,
                                                   train,
+                                                  showSeconds,
+
                                               }) {
     const handleDown = useCallback((e) => onMouseDown(rowKey, colIndex, e), [onMouseDown, rowKey, colIndex]);
     const handleEnter = useCallback(() => onMouseEnter(rowKey, colIndex), [onMouseEnter, rowKey, colIndex]);
 
-    const handleDouble = useCallback(() => {
-        onDoubleClick(stationId, sub, train, entry[sub]);
-    }, [onDoubleClick, stationId, sub, train, entry]);
+
+
+    // 発/着どちらの行をダブルクリックしても、同じ駅・同じ列車の着発をまとめて編集する
+    // ポップアップを開く(番線行は今回のスコープ外)。ポップアップをセルの真上に
+    // 出すため、このセル自身のgetBoundingClientRect()をここで取得して渡す。
+    const handleDouble = useCallback((e) => {
+        if (sub === 'track') return;
+        const rect = e.currentTarget.getBoundingClientRect();
+        onDoubleClick(stationId, train, entry, sub, {
+            left: rect.left, top: rect.top, width: rect.width, height: rect.height,
+        });
+    }, [onDoubleClick, stationId, train, entry, sub]);
 
     const value = entry.pass ? (sub === 'track' ? '' : 'ﾚ') : entry[sub];
 
@@ -190,13 +259,34 @@ const TimeCell = React.memo(function TimeCell({
         (isColSelected ? ' tt-col-selected' : '') +
         (isEmptyCol ? ' tt-empty-col' : '');
 
+    const formatTimeDisplay = (timeVal, showSeconds) => {
+        if (!timeVal) return '';
+        const str = String(timeVal);
+
+        if (showSeconds && str.substring(5, 6) == "") {
+            return str.substring(0, 4) + "00";
+
+        }
+        // 秒表示OFF かつ 6桁以上の場合は、最初の4桁（時分）だけ切り出して表示
+        if (!showSeconds && str.length >= 6) {
+            return str.substring(0, 4);
+        }
+        return str;
+    };
+
+    let displayValue = value;
+    if (sub === 'arr') displayValue = formatTimeDisplay(entry.arr, showSeconds); // 関数を通す
+    if (sub === 'dep') displayValue = formatTimeDisplay(entry.dep, showSeconds); // 関数を通す
+    if (sub === 'track') displayValue = entry.track || '';
+
+
     return (
         <td className={className}
             onMouseDown={handleDown}
             onMouseEnter={handleEnter}
             onDoubleClick={handleDouble}
         >
-            {value || '・・'}
+            {displayValue || '・・'}
         </td>
     );
 });
@@ -217,12 +307,14 @@ export function TimetablePanel({
                                    defaultPos = { x: 60, y: 60, width: 1000, height: 620 },
                                }) {
     const stations = stationsProp || REAL_STATIONS;
-    const trains = trainsProp || REAL_TRAINS;
     const [trainList, setTrainList] = useState(() => trainsProp || REAL_TRAINS);
 
-    // ② 編集中のセル情報を保持する State
-    // 例: { train, stationId, sub, currentValue, rowKey, colIndex }
+
+    // 編集中のセル情報を保持する State。
+    // { train, stationId, arr, dep, anchorRect } | null
     const [editingCell, setEditingCell] = useState(null);
+    const [showSeconds, setShowSeconds] = useState(false);
+
     // ダイヤ表示エリアの一番右に、常に1本だけ空列車列を追加する。
     // このEMPTY_TRAINは実データではなく表示専用(新規列車追加はここをクリックする入口)。
     const displayTrains = useMemo(() => [...trainList, EMPTY_TRAIN], [trainList]);
@@ -298,10 +390,10 @@ export function TimetablePanel({
 
         if (colIndex === emptyColIndex) {
             // 時刻編集への入り口としてのログ出力（今後の実装用）
-            // return; を削除して、下の選択処理へ進ませる
+            console.log('[TimetablePanel] 空列車セルの編集を開始:', { rowKey, colIndex });
+            // return; せず、下の選択処理へそのまま進める(選択自体は通常どおり行う)
         }
 
-        // これ以降の処理が空列車列でも実行されるようになる
         dragRef.current = {
             active: true,
             mode: 'cell',
@@ -333,17 +425,31 @@ export function TimetablePanel({
     const isCellSelected = (rowKey, colIndex) =>
         selectedCells.has(`${rowKey}|${colIndex}`);
 
-    // ④ 時刻/番線の保存処理
-    const handleSaveValue = useCallback((newValue) => {
+    // 発/着どちらのセルをダブルクリックしても、同じ駅・同じ列車の両方をまとめて
+    // 編集できるポップアップを開く。entryには現在のarr/depが両方入っている。
+    const handleCellDoubleClick = useCallback((stationId, train, entry, sub, anchorRect) => { // sub を受け取る
+        setEditingCell({
+            train,
+            stationId,
+            arr: entry.arr || '',
+            dep: entry.dep || '',
+            anchorRect,
+            clickedSub: sub,
+        });
+    }, []);
+
+    // 時刻/番線の保存処理。着/発をまとめて1回で書き込む。
+    const handleSaveValue = useCallback(({ arr, dep }) => {
         if (!editingCell) return;
 
-        const { train, stationId, sub } = editingCell;
+        const { train, stationId } = editingCell;
+        const nextEntry = { arr, dep };
 
         if (train.id === '__empty__') {
-            // ▼ 空列車セルから編集した場合：新しい列車データを生成して末尾に追加
+            // ▼ 空列車セルから編集した場合: 新しい列車データを生成して末尾に追加
             const newTrain = {
                 id: `train_${Date.now()}`,
-                trainNo: '', // 仮の番号（必要に応じて入力ウィンドウで設定）
+                trainNo: '', // 仮の番号(必要に応じて別途、列車番号欄から入力する想定)
                 duty: '',
                 type: '普通',
                 name: '',
@@ -353,46 +459,32 @@ export function TimetablePanel({
                 endStation: '',
                 endWork: '',
                 times: {
-                    [stationId]: {
-                        [sub]: newValue,
-                    },
+                    [stationId]: nextEntry,
                 },
             };
             setTrainList((prev) => [...prev, newTrain]);
         } else {
-            // ▼ 既存列車のセルを編集した場合：該当セルのみ書き換え
+            // ▼ 既存列車のセルを編集した場合: 該当駅の着発だけ書き換え
             setTrainList((prev) =>
                 prev.map((t) => {
                     if (t.id !== train.id) return t;
-                    const prevStationTime = t.times[stationId] || {};
                     return {
                         ...t,
                         times: {
                             ...t.times,
-                            [stationId]: {
-                                ...prevStationTime,
-                                [sub]: newValue,
-                            },
+                            [stationId]: nextEntry,
                         },
                     };
                 })
             );
         }
 
-        // 編集終了
         setEditingCell(null);
     }, [editingCell]);
 
-
-    const handleCellDoubleClick = useCallback((stationId, sub, train, currentValue) => {
-        setEditingCell({
-            train,
-            stationId,
-            sub,
-            currentValue: currentValue || '',
-        });
-        console.log(stationId +"を編集")
-    }, []);
+    const editingStationName = editingCell
+        ? (stations.find((s) => s.id === editingCell.stationId)?.name ?? '')
+        : '';
 
     return (
         <Window
@@ -405,12 +497,22 @@ export function TimetablePanel({
             defaultPos={defaultPos}
         >
             <div className="tt-scroll">
+                <div style={{ marginBottom: '8px' }}>
+                    <label>
+                        <input
+                            type="checkbox"
+                            checked={showSeconds}
+                            onChange={(e) => setShowSeconds(e.target.checked)}
+                        />
+                        秒を表示する
+                    </label>
+                </div>
                 <table className="tt-table">
                     <colgroup>
                         <col className="tt-col-label-major" />
                         <col className="tt-col-label-minor" />
                         {displayTrains.map((t) => (
-                            <col key={t.id} className="tt-col-time" />
+                            <col key={t.id} className="tt-col-time" style={showSeconds ? {width : "56px"} : {}} />
                         ))}
                     </colgroup>
 
@@ -442,8 +544,9 @@ export function TimetablePanel({
                     </thead>
 
                     <tbody>
-                    {stations.map((station) => {
-                        const subRows = buildStationSubRows(station);
+                    {stations.map((station, index) => {
+                        const isLast = index === stations.length - 1; // 最後の駅かどうかの判定を追加
+                        const subRows = buildStationSubRows(station, isLast); // isLast を渡す
                         return subRows.map((sub, subIdx) => {
                             const rowKey = `${station.id}_${sub}`;
                             return (
@@ -479,6 +582,7 @@ export function TimetablePanel({
                                             onDoubleClick={handleCellDoubleClick}
                                             stationId={station.id}
                                             train={train}
+                                            showSeconds={showSeconds}
                                         />
                                     ))}
                                 </tr>
@@ -489,10 +593,11 @@ export function TimetablePanel({
                 </table>
             </div>
 
-            {/* editingCell が存在するときだけ入力モーダルを表示 */}
+            {/* editingCellが存在するときだけ、ダブルクリックしたセルの真上に入力ポップアップを表示 */}
             {editingCell && (
                 <TimeInputModal
                     cellInfo={editingCell}
+                    stationName={editingStationName}
                     onSave={handleSaveValue}
                     onClose={() => setEditingCell(null)}
                 />
