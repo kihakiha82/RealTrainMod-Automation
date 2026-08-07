@@ -78,6 +78,7 @@ function parseStationsForDirection(rosenPart, direction) {
         const omit = matchFirst(b, /JikokuhyouTrackOmit=([^\n]+)/);
         const hasTrack = omit === null;
         const trackLabels = matchAllGroups(b, /TrackRyakusyou=([^\n]+)/g);
+        const tracklists = matchAllGroups(b, /TrackName=([^\n]+)/g);
         const flags = directionFlags(keisiki, direction);
         const displayType = flags.hasDep && flags.hasArr ? 'arr_dep' : flags.hasArr ? 'arr_only' : 'dep_only';
         return {
@@ -87,8 +88,8 @@ function parseStationsForDirection(rosenPart, direction) {
             hasDep: flags.hasDep,
             hasArr: flags.hasArr,
             displayType, // TimetablePanel の buildStationSubRows はこちらを参照する
-            // trackLabels は時刻パース時にのみ使用し、最終出力には含めない
             _trackLabels: trackLabels,
+            trackLists: tracklists,
         };
     });
 }
@@ -227,12 +228,12 @@ export function parseOud2(text) {
     if (kudariPart) {
         const stationsKudari = parseStationsForDirection(rosenPart, 'kudari');
         const trains = parseTrains(kudariPart, stationsKudari);
-        result.kudari = { stations: stripInternalFields(stationsKudari), trains };
+        result.kudari = { stations: stationsKudari, trains };
     }
     if (noboriPart) {
         const stationsNobori = parseStationsForDirection(rosenPart, 'nobori');
         const trains = parseTrains(noboriPart, stationsNobori);
-        result.nobori = { stations: stripInternalFields(stationsNobori), trains };
+        result.nobori = { stations: stationsNobori, trains };
     }
 
     if (!result.kudari && !result.nobori) {

@@ -1,4 +1,5 @@
 // 自動生成された timetableData.js
+//今は未使用
 export const stations = [
     {
         "id": "s0",

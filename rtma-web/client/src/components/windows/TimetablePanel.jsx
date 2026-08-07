@@ -2,10 +2,7 @@
 import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { Window } from '../Window';
-import {
-    stations as REAL_STATIONS,
-    trains as REAL_TRAINS,
-} from './timetableData';
+
 import { parseOud2 } from './oud2Parser';
 import './TimetablePanel.css';
 
@@ -92,8 +89,12 @@ function setsEqual(a, b) {
  * 時刻入力ポップアップ。
  *
  * 【今回の変更点】
+ * 0. 着/発に加えて番線(track)も同じポップアップで指定できるようにした。
+ *    その駅の番線表示行(hasTrack)が無い場合でも、停車する番線のデータ自体は
+ *    保持できる(表として番線行が出るかどうかはbuildStationSubRows側の話で、
+ *    データを持てるかどうかとは別問題として切り分けている)。
  * 1. 発/着を別ウィンドウにせず、同じ駅・同じ列車の着時刻/発時刻を1つのポップアップで
- *    まとめて入力できるようにした(番線は今回のスコープ外のまま)。
+ *    まとめて入力できるようにした。
  * 2. 汎用のWindowコンポーネント(ドラッグ可能な独立ウィンドウ)を使うのをやめ、
  *    ダブルクリックしたセルの真上に来るよう、そのセルのgetBoundingClientRect()を
  *    基準に position:fixed で直接配置するポップオーバーにした。
@@ -111,13 +112,14 @@ function setsEqual(a, b) {
  * getBoundingClientRect()で取ったビューポート基準の座標とズレる。そのため
  * createPortal()でdocument.body直下に描画し、Rndの外に出すことでこれを回避している。
  */
-function TimeInputModal({ cellInfo, stationName, onSave, onClose }) {
+function TimeInputModal({ cellInfo, stationName, onSave, onClose, trackLists}) {
     const [arrValue, setArrValue] = useState(cellInfo.arr || '');
     const [depValue, setDepValue] = useState(cellInfo.dep || '');
+    const [trackValue, setTrackValue] = useState(cellInfo.track || '');
 
     const handleSubmit = (e) => {
         e.preventDefault();
-        onSave({ arr: arrValue, dep: depValue });
+        onSave({ arr: arrValue, dep: depValue, track: trackValue });
     };
 
     const { anchorRect } = cellInfo;
@@ -152,6 +154,22 @@ function TimeInputModal({ cellInfo, stationName, onSave, onClose }) {
                                 autoFocus={cellInfo.clickedSub === 'dep'}
                             />
                         </label>
+                        <label className="tt-modal-field tt-modal-field--track">
+                            <span>発着番線</span>
+                            <select
+                                value={trackValue}
+                                onChange={e => setTrackValue(e.target.value)}
+                                style={{ flex: 1, marginLeft: '4px' }}
+                            >
+                                <option value="">未選択</option>
+                                {trackLists.map((track) => (
+                                    <option key={track} value={track}>
+                                        {track}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+
                     </div>
                     <div className="tt-modal-actions">
                         <button type="button" onClick={onClose}>キャンセル</button>
@@ -240,11 +258,10 @@ const TimeCell = React.memo(function TimeCell({
 
 
 
-    // 発/着どちらの行をダブルクリックしても、同じ駅・同じ列車の着発をまとめて編集する
-    // ポップアップを開く(番線行は今回のスコープ外)。ポップアップをセルの真上に
-    // 出すため、このセル自身のgetBoundingClientRect()をここで取得して渡す。
+    // 発/着/番線のどの行をダブルクリックしても、同じ駅・同じ列車の3項目をまとめて
+    // 編集できるポップアップを開く。ポップアップをセルの真上に出すため、
+    // このセル自身のgetBoundingClientRect()をここで取得して渡す。
     const handleDouble = useCallback((e) => {
-        if (sub === 'track') return;
         const rect = e.currentTarget.getBoundingClientRect();
         onDoubleClick(stationId, train, entry, sub, {
             left: rect.left, top: rect.top, width: rect.width, height: rect.height,
@@ -490,25 +507,26 @@ export function TimetablePanel({
     const isCellSelected = (rowKey, colIndex) =>
         selectedCells.has(`${rowKey}|${colIndex}`);
 
-    // 発/着どちらのセルをダブルクリックしても、同じ駅・同じ列車の両方をまとめて
-    // 編集できるポップアップを開く。entryには現在のarr/depが両方入っている。
-    const handleCellDoubleClick = useCallback((stationId, train, entry, sub, anchorRect) => { // sub を受け取る
+    // 発/着/番線のどのセルをダブルクリックしても、同じ駅・同じ列車の3項目をまとめて
+    // 編集できるポップアップを開く。entryには現在のarr/dep/trackが全部入っている。
+    const handleCellDoubleClick = useCallback(( stationId, train, entry, sub, anchorRect) => {
         setEditingCell({
             train,
             stationId,
             arr: entry.arr || '',
             dep: entry.dep || '',
+            track: entry.track || '',
             anchorRect,
             clickedSub: sub,
         });
     }, []);
 
-    // 時刻/番線の保存処理。着/発をまとめて1回で書き込む。
-    const handleSaveValue = useCallback(({ arr, dep }) => {
+    // 時刻/番線の保存処理。着/番線/発をまとめて1回で書き込む。
+    const handleSaveValue = useCallback(({ arr, dep, track }) => {
         if (!editingCell) return;
 
         const { train, stationId } = editingCell;
-        const nextEntry = { arr, dep };
+        const nextEntry = { arr, dep, track };
 
         if (train.id === '__empty__') {
             // ▼ 空列車セルから編集した場合: 新しい列車データを生成して末尾に追加
@@ -550,6 +568,10 @@ export function TimetablePanel({
     const editingStationName = editingCell
         ? (stations.find((s) => s.id === editingCell.stationId)?.name ?? '')
         : '';
+
+    const editingStationTrackLists = editingCell
+        ? (stations.find((s) => s.id === editingCell.stationId)?.trackLists ?? [])
+        : [];
 
     return (
         <Window
@@ -704,6 +726,7 @@ export function TimetablePanel({
                 <TimeInputModal
                     cellInfo={editingCell}
                     stationName={editingStationName}
+                    trackLists={editingStationTrackLists}
                     onSave={handleSaveValue}
                     onClose={() => setEditingCell(null)}
                 />
