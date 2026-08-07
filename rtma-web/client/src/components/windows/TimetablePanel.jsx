@@ -266,13 +266,20 @@ const TimeCell = React.memo(function TimeCell({
         if (!timeVal) return '';
         const str = String(timeVal);
 
-        if (showSeconds && str.substring(5, 6) == "") {
-            return str.substring(0, 4) + "00";
+        if (showSeconds && str.substring(5, 6) === "") {
+            if (str.length === 4) {
+                return str + "00";
+            }
+            if (str.length === 3) {
+                return str + "00";
+            }
 
         }
         // 秒表示OFF かつ 6桁以上の場合は、最初の4桁(時分)だけ切り出して表示
-        if (!showSeconds && str.length >= 6) {
+        if (!showSeconds && str.length === 6) {
             return str.substring(0, 4);
+        } else if (!showSeconds && str.length === 5) {
+            return str.substring(0, 3);
         }
         return str;
     };

@@ -119,10 +119,10 @@ function parseField(field, station) {
 
     if (timesPart.includes('/')) {
         const [chakuS, hatsuS] = splitOnce(timesPart, '/');
-        if (chakuS) entry.arr = fmtHM(parseTimeHM(chakuS));
-        if (hatsuS) entry.dep = fmtHM(parseTimeHM(hatsuS));
+        if (chakuS) entry.arr = chakuS;
+        if (hatsuS) entry.dep = hatsuS;
     } else if (timesPart) {
-        const t = fmtHM(parseTimeHM(timesPart));
+        const t = timesPart;
         if (station.hasDep && !station.hasArr) entry.dep = t;
         else if (station.hasArr && !station.hasDep) entry.arr = t;
         else entry.dep = t;
