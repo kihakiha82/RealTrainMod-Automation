@@ -53,7 +53,14 @@
 .tt-meta-cell {
     background-color: #f0f0f0;
     font-weight: normal;
+
+
 }
+
+.tt-meta-cell:not(.tt-number-cell) {
+    border-top: 1px solid #ccc;
+}
+
 
 .tt-overflow-cell {
     font-size: 10px;
@@ -126,7 +133,11 @@
     padding-right: 2px;
 }
 
-.tt-table .tt-cell-pass {
+.tt-table .tt-empty-col {
+
+}
+
+.tt-table .tt-cell-pass,.tt-table .tt-cell-via {
     text-align: center;
 }
 
@@ -150,9 +161,6 @@
     border-bottom: 2px solid #aaa;
 }
 
-.tt-empty {
-    color: #ccc;
-}
 
 
 .tt-col-selected,
@@ -266,6 +274,26 @@
     font-size: 14px;
     padding: 3px 4px;
     box-sizing: border-box;
+}
+
+.tt-modal-field--track {
+    display: flex;
+    height: 44px;
+}
+
+.tt-modal-pass-toggle {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+/* ラジオボタンとテキストのズレを調整 */
+.tt-modal-pass-toggle label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
 }
 
 

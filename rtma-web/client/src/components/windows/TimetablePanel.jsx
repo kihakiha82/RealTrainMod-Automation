@@ -116,10 +116,30 @@ function TimeInputModal({ cellInfo, stationName, onSave, onClose, trackLists}) {
     const [arrValue, setArrValue] = useState(cellInfo.arr || '');
     const [depValue, setDepValue] = useState(cellInfo.dep || '');
     const [trackValue, setTrackValue] = useState(cellInfo.track || '');
+    const [isPass, setIsPass] = useState(!!cellInfo.pass);
+    const isCurrentlyNone = !cellInfo.pass && !cellInfo.arr && !cellInfo.dep && !cellInfo.track;
+    const initialOpType = cellInfo.pass ? 'pass' : (isCurrentlyNone ? 'none' : 'stop');
+    const [opType, setOpType] = useState(initialOpType);
+
+
+    const handleOpTypeChange = (e) => {
+        const type = e.target.value;
+        setOpType(type);
+
+        if (type === 'none') {
+            setArrValue('');
+            setDepValue('');
+            setTrackValue('');
+        }
+    };
 
     const handleSubmit = (e) => {
         e.preventDefault();
-        onSave({ arr: arrValue, dep: depValue, track: trackValue });
+        if (opType === 'none') {
+            onSave({ arr: '', dep: '', track: '', pass: false });
+        } else {
+            onSave({ arr: arrValue, dep: depValue, track: trackValue, pass: opType === 'pass' });
+        }
     };
 
     const { anchorRect } = cellInfo;
@@ -131,9 +151,41 @@ function TimeInputModal({ cellInfo, stationName, onSave, onClose, trackLists}) {
                 style={{ left: anchorRect.left, top: anchorRect.top }}
                 onClick={(e) => e.stopPropagation()}
             >
-                <div className="tt-modal-title">{stationName} の時刻入力</div>
+                <div className="tt-modal-title">{stationName}</div>
                 <form onSubmit={handleSubmit}>
                     <div className="tt-modal-fields">
+                        <div className="tt-modal-pass-toggle" style={{ marginBottom: '8px', display: 'flex', gap: '12px' }}>
+                            <label>
+                                <input
+                                    type="radio"
+                                    name="stopType"
+                                    value="none"
+                                    checked={opType === 'none'}
+                                    onChange={handleOpTypeChange}
+                                />
+                                運行なし
+                            </label>
+                            <label>
+                                <input
+                                    type="radio"
+                                    name="stopType"
+                                    value="stop"
+                                    checked={opType === 'stop'}
+                                    onChange={handleOpTypeChange}
+                                />
+                                停車
+                            </label>
+                            <label>
+                                <input
+                                    type="radio"
+                                    name="stopType"
+                                    value="pass"
+                                    checked={opType === 'pass'}
+                                    onChange={handleOpTypeChange}
+                                />
+                                通過
+                            </label>
+                        </div>
                         <label className="tt-modal-field">
                             <span>着</span>
                             <input
@@ -160,6 +212,7 @@ function TimeInputModal({ cellInfo, stationName, onSave, onClose, trackLists}) {
                                 value={trackValue}
                                 onChange={e => setTrackValue(e.target.value)}
                                 style={{ flex: 1, marginLeft: '4px' }}
+                                autoFocus={cellInfo.clickedSub === 'track'}
                             >
                                 <option value="">未選択</option>
                                 {trackLists.map((track) => (
@@ -251,6 +304,8 @@ const TimeCell = React.memo(function TimeCell({
                                                   stationId,
                                                   train,
                                                   showSeconds,
+                                                  isVia,
+                                                  showPassTimes,
 
                                               }) {
     const handleDown = useCallback((e) => onMouseDown(rowKey, colIndex, e), [onMouseDown, rowKey, colIndex]);
@@ -270,14 +325,8 @@ const TimeCell = React.memo(function TimeCell({
 
     const value = entry.pass ? (sub === 'track' ? '' : 'ﾚ') : entry[sub];
 
-    const className =
-        'tt-time-cell' +
-        (sub === 'track' ? ' tt-track-cell' : '') +
-        (value === 'ﾚ' || value === 'レ' ? ' tt-cell-pass' : '') +
-        (value ? ' ' + (typeClassName || '') : ' tt-empty') +
-        (isCellSelected ? ' tt-cell-selected' : '') +
-        (isColSelected ? ' tt-col-selected' : '') +
-        (isEmptyCol ? ' tt-empty-col' : '');
+
+
 
     const formatTimeDisplay = (timeVal, showSeconds) => {
         if (!timeVal) return '';
@@ -313,6 +362,20 @@ const TimeCell = React.memo(function TimeCell({
     } else {
         displayValue = value;
     }
+
+    if (!displayValue && isVia) {
+        displayValue = '||';
+    }
+
+    const className =
+        'tt-time-cell' +
+        (sub === 'track' ? ' tt-track-cell' : '') +
+        (entry.pass && sub !== 'track' ? ' tt-cell-pass' : '') + // ← ここを変更
+        (displayValue === '||' ? ' tt-cell-via' : '') +
+        (displayValue ? ' ' + (typeClassName || '') : ' tt-empty') +
+        (isCellSelected ? ' tt-cell-selected' : '') +
+        (isColSelected ? ' tt-col-selected' : '') +
+        (isEmptyCol ? ' tt-empty-col' : '');
 
 
     return (
@@ -351,7 +414,11 @@ export function TimetablePanel({
     const activeParsed = customData ? customData[direction] : null;
     const stations = activeParsed?.stations || stationsProp || REAL_STATIONS;
 
+    const [showVia, setShowVia] = useState(true);
     const [trainList, setTrainList] = useState(() => trainsProp || REAL_TRAINS);
+    const displayTrains = useMemo(() => [...trainList, EMPTY_TRAIN], [trainList]);
+
+
 
     // customData(読み込んだファイル)や方向(下り/上り)が変わったら、
     // 編集中の trainList をその方向の列車データで丸ごと置き換える。
@@ -388,6 +455,25 @@ export function TimetablePanel({
         reader.readAsText(file, 'utf-8');
     }, []);
 
+    const trainActiveRanges = useMemo(() => {
+        const ranges = {};
+        displayTrains.forEach((train) => {
+            let first = -1;
+            let last = -1;
+            stations.forEach((st, idx) => {
+                const entry = train.times?.[st.id];
+                // pass:true、または着/発時刻が入力されているかを判定
+                const isActive = entry && (entry.pass || !!entry.arr || !!entry.dep);
+                if (isActive) {
+                    if (first === -1) first = idx;
+                    last = idx;
+                }
+            });
+            ranges[train.id] = { first, last };
+        });
+        return ranges;
+    }, [displayTrains, stations]);
+
     const displayTitle = customData
         ? `${direction === 'kudari' ? '下り' : '上り'}時刻表 - ${loadedFileName}`
         : title;
@@ -399,7 +485,7 @@ export function TimetablePanel({
 
     // ダイヤ表示エリアの一番右に、常に1本だけ空列車列を追加する。
     // このEMPTY_TRAINは実データではなく表示専用(新規列車追加はここをクリックする入口)。
-    const displayTrains = useMemo(() => [...trainList, EMPTY_TRAIN], [trainList]);
+
     const emptyColIndex = trainList.length;
 
     // 選択状態
@@ -407,6 +493,9 @@ export function TimetablePanel({
     // selectedColumns: Set<colIndex>          … 列(列車)単位の選択
     const [selectedCells, setSelectedCells] = useState(() => new Set());
     const [selectedColumns, setSelectedColumns] = useState(() => new Set());
+
+    const [showPassTimes, setShowPassTimes] = useState(false);
+
 
     // ドラッグ中の状態は再レンダリングを起こさなくてよいので ref で保持
     const dragRef = useRef({
@@ -522,11 +611,11 @@ export function TimetablePanel({
     }, []);
 
     // 時刻/番線の保存処理。着/番線/発をまとめて1回で書き込む。
-    const handleSaveValue = useCallback(({ arr, dep, track }) => {
+    const handleSaveValue = useCallback(({ arr, dep, track, pass }) => {
         if (!editingCell) return;
 
         const { train, stationId } = editingCell;
-        const nextEntry = { arr, dep, track };
+        const nextEntry = { arr, dep, track, pass };
 
         if (train.id === '__empty__') {
             // ▼ 空列車セルから編集した場合: 新しい列車データを生成して末尾に追加
@@ -592,6 +681,14 @@ export function TimetablePanel({
                             onChange={(e) => setShowSeconds(e.target.checked)}
                         />
                         秒を表示する
+                    </label>
+                    <label>
+                        <input
+                            type="checkbox"
+                            checked={showPassTimes}
+                            onChange={(e) => setShowPassTimes(e.target.checked)}
+                        />
+                        通過時刻を表示
                     </label>
 
                     {/* --- .oud2 読み込みツールバー ---
@@ -694,25 +791,39 @@ export function TimetablePanel({
                                         </td>
                                     )}
                                     <td className="tt-sub-label">{SUB_ROW_LABEL[sub]}</td>
-                                    {displayTrains.map((train, colIndex) => (
-                                        <TimeCell
-                                            key={train.id}
-                                            rowKey={rowKey}
-                                            colIndex={colIndex}
-                                            sub={sub}
-                                            entry={train.times[station.id] || EMPTY_ENTRY}
-                                            typeClassName={(TRAIN_TYPES[train.type] || {}).className}
-                                            isCellSelected={isCellSelected(rowKey, colIndex)}
-                                            isColSelected={isColSelected(colIndex)}
-                                            isEmptyCol={colIndex === emptyColIndex}
-                                            onMouseDown={handleCellMouseDown}
-                                            onMouseEnter={handleCellMouseEnter}
-                                            onDoubleClick={handleCellDoubleClick}
-                                            stationId={station.id}
-                                            train={train}
-                                            showSeconds={showSeconds}
-                                        />
-                                    ))}
+                                    {displayTrains.map((train, colIndex) => {
+                                        const entry = train.times[station.id] || EMPTY_ENTRY;
+                                        const range = trainActiveRanges[train.id];
+                                        const isActive = entry.pass || !!entry.arr || !!entry.dep;
+
+                                        const isVia = showVia &&
+                                            !isActive &&
+                                            range &&
+                                            range.first !== -1 &&
+                                            index > range.first &&
+                                            index < range.last;
+
+                                        return (
+                                            <TimeCell
+                                                key={train.id}
+                                                rowKey={rowKey}
+                                                colIndex={colIndex}
+                                                sub={sub}
+                                                entry={train.times[station.id] || EMPTY_ENTRY}
+                                                typeClassName={(TRAIN_TYPES[train.type] || {}).className}
+                                                isCellSelected={isCellSelected(rowKey, colIndex)}
+                                                isColSelected={isColSelected(colIndex)}
+                                                isEmptyCol={colIndex === emptyColIndex}
+                                                onMouseDown={handleCellMouseDown}
+                                                onMouseEnter={handleCellMouseEnter}
+                                                onDoubleClick={handleCellDoubleClick}
+                                                stationId={station.id}
+                                                train={train}
+                                                showSeconds={showSeconds}
+                                                isVia={isVia}
+                                            />
+                                        );
+                                    })}
                                 </tr>
                             );
                         });

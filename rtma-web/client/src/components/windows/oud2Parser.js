@@ -96,7 +96,18 @@ function parseStationsForDirection(rosenPart, direction) {
 
 function parseField(field, station) {
     if (field === '') return {};
-    if (!field.includes(';')) return { pass: true }; // 運行区間内・停車なし(通過)
+
+    if (!field.includes(';')) {
+        // 運行区間内・停車なし(通過): "<進入側番線Index>$<出発側番線Index>"
+        const [beforeIdx, afterIdx] = splitOnce(field, '$');
+        const idxStr = beforeIdx || afterIdx;
+        const trackIdx = /^\d+$/.test(idxStr) ? parseInt(idxStr, 10) : null;
+        let trackLabel = null;
+        if (trackIdx !== null && station._trackLabels && trackIdx >= 0 && trackIdx < station._trackLabels.length) {
+            trackLabel = station._trackLabels[trackIdx];
+        }
+        return trackLabel ? { pass: true, track: trackLabel } : { pass: true };
+    }
 
     const [before, restRaw] = splitOnce(field, ';');
     let timesPart, after;
@@ -122,6 +133,7 @@ function parseField(field, station) {
         const [chakuS, hatsuS] = splitOnce(timesPart, '/');
         if (chakuS) entry.arr = chakuS;
         if (hatsuS) entry.dep = hatsuS;
+
     } else if (timesPart) {
         const t = timesPart;
         if (station.hasDep && !station.hasArr) entry.dep = t;
