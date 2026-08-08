@@ -5,6 +5,7 @@ import { Window } from '../Window';
 
 import { parseOud2 } from './oud2Parser';
 import './TimetablePanel.css';
+import {STOP_ICON_SHAPES} from "../../iconShapes.js";
 
 const EMPTY_ENTRY = {};
 // ------------------------------------------------------------------
@@ -52,6 +53,65 @@ function buildStationSubRows(station, isLast) {
 }
 
 const SUB_ROW_LABEL = { track: '番線', dep: '発', arr: '着' };
+
+/**
+ * 駅データを、TimeInputModalが扱いやすい統一形式 { id, name, stops }[] に正規化する。
+ *
+ * 2種類のデータソースを吸収する:
+ *   - 実データ(App.jsxのgetRouteStationsForTimetable経由。Station.tracks[]):
+ *     { id, name, stops: [{ id, trainResourceName, carCount, s, color, icon }] }
+ *   - .oud2読み込み(oud2Parser.js。station.trackLists = 番線ラベル文字列の配列):
+ *     停車位置(StopVariant)のデータはoud2に存在しないため、stopsは常に空配列になる
+ *     (= 停車位置選択UIはnull相当として表示されない。呼び出し側でstops.length>0を
+ *     チェックするだけで両ソースに対応でき、特別分岐は不要)。
+ */
+function normalizeStationTracks(station) {
+    if (!station) return [];
+    if (Array.isArray(station.tracks) && station.tracks.length > 0) {
+        return station.tracks.map((t) => ({
+            id: t.id,
+            name: t.name || t.id,
+            stops: Array.isArray(t.stops) ? t.stops : [],
+            length: typeof t.length === 'number' ? t.length : null,
+        }));
+    }
+    if (Array.isArray(station.trackLists) && station.trackLists.length > 0) {
+        return station.trackLists.map((label) => ({ id: label, name: label, stops: [], length: null }));
+    }
+    return [];
+}
+
+/**
+ * 番線内の停車位置(StopVariant)群を、ポップアップの直線上に表示するための
+ * 相対位置(0〜100%)に変換する。位置は「番線の物理的な総延長(trackLength)に対する
+ * s(番線内累積距離)の比率」で決める(= 実際の番線上の位置関係をそのまま反映する)。
+ * PAD分は左右の余白として空け、マーカーが端(0%/100%)に張り付いて見切れないようにする。
+ *
+ * trackLengthが未知(0または未計算)の場合のみ、停車位置どうしのs最小・最大を基準にした
+ * 相対位置にフォールバックする(App.jsx側が必ずlengthを添えるため、通常は通らない経路)。
+ */
+function computeStopMarkerPositions(stops, trackLength) {
+    if (!Array.isArray(stops) || stops.length === 0) return [];
+    const PAD = 10;
+    if (stops.length === 1 && !(trackLength > 1e-9)) return [{ ...stops[0], pct: 50 }];
+
+    if (trackLength > 1e-9) {
+        return stops.map((stop) => {
+            const ratio = Math.min(1, Math.max(0, (stop.s ?? 0) / trackLength));
+            return { ...stop, pct: PAD + (1 - ratio) * (100 - 2 * PAD) };
+        });
+    }
+
+    // フォールバック(trackLengthが無い場合): 停車位置どうしの相対範囲で表示する
+    const sValues = stops.map((s) => s.s ?? 0);
+    const min = Math.min(...sValues);
+    const max = Math.max(...sValues);
+    const range = max - min;
+    return stops.map((stop) => {
+        const t = range > 1e-9 ? ((stop.s ?? 0) - min) / range : 0.5;
+        return { ...stop, pct: PAD + (1 - t) * (100 - 2 * PAD) };
+    });
+}
 
 /**
  * ダイヤ表示エリアの一番右に常に1本だけ表示する「空列車」列。
@@ -111,15 +171,32 @@ function setsEqual(a, b) {
  * position:fixedを使うと、それは画面(ビューポート)ではなくその祖先が基準点になってしまい、
  * getBoundingClientRect()で取ったビューポート基準の座標とズレる。そのため
  * createPortal()でdocument.body直下に描画し、Rndの外に出すことでこれを回避している。
+ *
+ * 【番線・停車位置の選択】
+ *   - tracksは normalizeStationTracks() で正規化済みの { id, name, stops }[]。
+ *   - 番線を選ぶと、その番線が持つ停車位置(StopVariant)を下部に直線+マーカーで表示する。
+ *     マーカーをクリックすると選択状態(青)になり、他は非選択(黄)のまま。
+ *     マーカーにカーソルを乗せると、その停車位置の車種・両数をツールチップ表示する。
+ *   - 選択中の番線にstopsが無い場合(.oud2読み込み由来、または停車位置未登録の駅)は
+ *     この直線自体を表示しない。stopIdはnullのままでもonSaveは正しく動作する。
  */
-function TimeInputModal({ cellInfo, stationName, onSave, onClose, trackLists}) {
+function TimeInputModal({ cellInfo, stationName, onSave, onClose, tracks}) {
     const [arrValue, setArrValue] = useState(cellInfo.arr || '');
     const [depValue, setDepValue] = useState(cellInfo.dep || '');
-    const [trackValue, setTrackValue] = useState(cellInfo.track || '');
-    const isCurrentlyNone = !cellInfo.pass && !cellInfo.arr && !cellInfo.dep && !cellInfo.track;
-    const initialOpType = cellInfo.pass ? 'pass' : (isCurrentlyNone ? 'none' : 'stop');
+    const initialOpType = cellInfo.pass ? 'pass' : 'stop';
     const [opType, setOpType] = useState(initialOpType);
 
+    // 番線: 保存済みのtrackIdを優先し、無ければ旧データ(表示名文字列のtrack)から
+    // 一致する番線を探す(過去に保存されたエントリとの互換用)。それも無ければ先頭の番線。
+    const initialTrackId = cellInfo.trackId
+        || tracks.find((t) => t.name === cellInfo.track)?.id
+        || (tracks[0]?.id ?? '');
+    const [trackId, setTrackId] = useState(initialTrackId);
+    const [stopId, setStopId] = useState(cellInfo.stopId ?? null);
+
+    const selectedTrack = tracks.find((t) => t.id === trackId) ?? null;
+    const stopMarkers = computeStopMarkerPositions(selectedTrack?.stops, selectedTrack?.length);
+    const STOP_ICON_SYMBOL_BY_ID = Object.fromEntries(STOP_ICON_SHAPES.map((s) => [s.id, s.symbol]))
 
     const handleOpTypeChange = (e) => {
         const type = e.target.value;
@@ -128,16 +205,33 @@ function TimeInputModal({ cellInfo, stationName, onSave, onClose, trackLists}) {
         if (type === 'none') {
             setArrValue('');
             setDepValue('');
-            setTrackValue('');
+            setTrackId('');
+            setStopId(null);
         }
+    };
+
+    const handleTrackChange = (e) => {
+        const nextId = e.target.value;
+        setTrackId(nextId);
+        const nextTrack = tracks.find((t) => t.id === nextId);
+        // 番線を切り替えたら、新しい番線に同じ停車位置が無い限り選択を解除する
+        const stopStillValid = nextTrack?.stops?.some((s) => s.id === stopId);
+        if (!stopStillValid) setStopId(null);
     };
 
     const handleSubmit = (e) => {
         e.preventDefault();
         if (opType === 'none') {
-            onSave({ arr: '', dep: '', track: '', pass: false });
+            onSave({ arr: '', dep: '', track: '', trackId: '', stopId: null, pass: false });
         } else {
-            onSave({ arr: arrValue, dep: depValue, track: trackValue, pass: opType === 'pass' });
+            onSave({
+                arr: arrValue,
+                dep: depValue,
+                track: selectedTrack?.name ?? '',
+                trackId: trackId || '',
+                stopId: stopId ?? null,
+                pass: opType === 'pass',
+            });
         }
     };
 
@@ -208,18 +302,44 @@ function TimeInputModal({ cellInfo, stationName, onSave, onClose, trackLists}) {
                         <label className="tt-modal-field tt-modal-field--track">
                             <span>発着番線</span>
                             <select
-                                value={trackLists[trackValue - 1]}
-                                onChange={e => setTrackValue(e.target.value)}
+                                value={trackId}
+                                onChange={handleTrackChange}
                                 style={{ flex: 1, marginLeft: '4px' }}
                                 autoFocus={cellInfo.clickedSub === 'track'}
                             >
-                                {trackLists.map((track) => (
-                                    <option key={track} value={track}>
-                                        {track}
+                                <option value="">(未選択)</option>
+                                {tracks.map((track) => (
+                                    <option key={track.id} value={track.id}>
+                                        {track.name}
                                     </option>
                                 ))}
                             </select>
                         </label>
+
+                        {stopMarkers.length > 0 && (
+                            <label className="tt-modal-field tt-modal-field--stop">
+                                <span>停車位置の選択</span>
+                                <div className="tt-stopline">
+                                    <div className="tt-stopline-bar" />
+                                    {stopMarkers.map((stop) => (
+                                        <div
+                                            key={stop.id}
+                                            className={
+                                                'tt-stopline-marker' +
+                                                (stop.id === stopId ? ' tt-stopline-marker--selected' : '')
+                                            }
+                                            style={{ left: `${stop.pct}%`, color: stop.color || '#ffd93d' }}
+                                            onClick={() => setStopId(stop.id)}
+                                        >
+                                            {STOP_ICON_SYMBOL_BY_ID[stop.icon]}
+                                            <span className="tt-stopline-tooltip">
+                                                {stop.trainResourceName ?? '?'}　{stop.carCount ?? '?'}両
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </label>
+                        )}
 
                     </div>
                     <div className="tt-modal-actions">
@@ -603,18 +723,20 @@ export function TimetablePanel({
             arr: entry.arr || '',
             dep: entry.dep || '',
             track: entry.track || '',
+            trackId: entry.trackId || '',
+            stopId: entry.stopId ?? null,
             pass: !!entry.pass,
             anchorRect,
             clickedSub: sub,
         });
     }, []);
 
-    // 時刻/番線の保存処理。着/番線/発をまとめて1回で書き込む。
-    const handleSaveValue = useCallback(({ arr, dep, track, pass }) => {
+    // 時刻/番線/停車位置の保存処理。着/番線/停車位置/発をまとめて1回で書き込む。
+    const handleSaveValue = useCallback(({ arr, dep, track, trackId, stopId, pass }) => {
         if (!editingCell) return;
 
         const { train, stationId } = editingCell;
-        const nextEntry = { arr, dep, track, pass };
+        const nextEntry = { arr, dep, track, trackId, stopId, pass };
 
         if (train.id === '__empty__') {
             // ▼ 空列車セルから編集した場合: 新しい列車データを生成して末尾に追加
@@ -657,8 +779,8 @@ export function TimetablePanel({
         ? (stations.find((s) => s.id === editingCell.stationId)?.name ?? '')
         : '';
 
-    const editingStationTrackLists = editingCell
-        ? (stations.find((s) => s.id === editingCell.stationId)?.trackLists ?? [])
+    const editingStationTracks = editingCell
+        ? normalizeStationTracks(stations.find((s) => s.id === editingCell.stationId))
         : [];
 
     return (
@@ -836,7 +958,7 @@ export function TimetablePanel({
                 <TimeInputModal
                     cellInfo={editingCell}
                     stationName={editingStationName}
-                    trackLists={editingStationTrackLists}
+                    tracks={editingStationTracks}
                     onSave={handleSaveValue}
                     onClose={() => setEditingCell(null)}
                 />

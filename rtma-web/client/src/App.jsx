@@ -15,6 +15,7 @@ import DiagramEditPanel from "./components/windows/DiagramEditPanel.jsx";
 import DiagramManagerPanel from "./components/windows/DiagramManagerPanel.jsx";
 import {TimetablePanel} from "./components/windows/TimetablePanel.jsx";
 import { deriveStationSlots } from './routeStationSlots.js';
+import { segmentLength2D } from './trackGeometry.js';
 
 export default function App() {
   const [segments,       setSegments]       = useState([]);
@@ -692,21 +693,46 @@ export default function App() {
   const [openTimetablePanels, setOpenTimetablePanels] = useState([]);
 
   /**
+   * 番線(Track.segments: [{segmentId, reversed}])の物理的な総延長(2D近似)を計算する。
+   * サーバー側(server.js buildStationFromBody)がstop.sの範囲検証に使っているのと同じ
+   * 「セグメント長を単純合算する」方式だが、あちらは検証用途で値を保存しないため、
+   * ここではTimetablePanelの停車位置ポップアップ(sの比率で位置を表示する)向けに
+   * クライアント側で同じ考え方で計算し直している。
+   */
+  function trackTotalLength(track) {
+    return (track.segments ?? []).reduce((sum, ts) => {
+      const seg = segments.find((s) => s.id === ts.segmentId);
+      return sum + (seg ? segmentLength2D(seg) : 0);
+    }, 0);
+  }
+
+  /**
    * 系統(Route)のwaypointsから、TimetablePanelが要求する形の駅リスト
-   * ({ id, name, hasTrack, hasDep, hasArr }[])を、系統に含まれる駅の順序どおりに作る。
+   * ({ id, name, hasTrack, hasDep, hasArr, tracks }[])を、系統に含まれる駅の順序どおりに作る。
    * 列車データがまだ無いため着発パターンは仮の規則: 始発駅は発のみ、終着駅は着のみ、
-   * 中間駅は着発両方(番線は今回のスコープ外なのでhasTrack=falseで統一)。
+   * 中間駅は着発両方。
+   *
+   * 【番線・停車位置情報の追加】駅(mapStations)側が持つtracks[](番線)・
+   * tracks[].stops[](停車位置=StopVariant)をそのままTimetablePanelへ渡す。
+   * hasTrackは「駅に番線データが1つでもあるか」で決める(以前はスコープ外として
+   * 常にfalseだったが、番線・停車位置ポップアップの実装に伴い実データを反映する)。
+   * stopsは駅編集画面(StationEditPanel)で登録済みのものだけが入るため、
+   * 未登録の駅ではtracks: []・stops: []のまま(ポップアップ側がnull相当として扱う)。
+   * 各番線には合わせて物理的な総延長(length)も添える(停車位置ポップアップで、
+   * マーカーの位置をsの比率(s/length)として表示するために使う)。
    */
   function getRouteStationsForTimetable(route) {
     const slots = deriveStationSlots(route.waypoints);
     return slots.map((slot) => {
       const station = mapStations.find((s) => s.id === slot.stationId);
+      const tracks = (station?.tracks ?? []).map((t) => ({ ...t, length: trackTotalLength(t) }));
       return {
         id: slot.stationId,
         name: station?.name ?? '(不明な駅)',
-        hasTrack: false,
+        hasTrack: tracks.length > 0,
         hasArr: slot.kind !== 'origin',
         hasDep: slot.kind !== 'terminal',
+        tracks,
       };
     });
   }

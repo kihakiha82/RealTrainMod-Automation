@@ -258,6 +258,7 @@
 
 .tt-modal-fields {
     display: flex;
+    flex-wrap: wrap;
     gap: 10px;
 }
 
@@ -296,6 +297,78 @@
     cursor: pointer;
 }
 
+
+/* 停車位置(StopVariant)選択ライン。番線プルダウンの下に表示する。
+   駅にstopsデータが無い(.oud2読み込み・未登録駅)場合はJS側でそもそも描画しない。 */
+.tt-modal-field--stop {
+    margin-top: 6px;
+    width: 100%;
+    flex-basis: 100%;
+}
+
+.tt-stopline {
+    position: relative;
+    width: 100%;
+    height: 26px;
+    margin-top: 4px;
+}
+
+.tt-stopline-bar {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 4px;
+    transform: translateY(-50%);
+    background: #333;
+    border-radius: 2px;
+}
+
+.tt-stopline-marker {
+    position: absolute;
+    top: 50%;
+    width: 14px;
+    height: 14px;
+    transform: translate(-50%, -50%);
+    /* background色は駅編集画面で保存された停車位置(StopVariant)の色をJS側から
+       インラインstyleで指定する(このルールは万一色未指定だった場合のフォールバック)。 */
+    background: #ffd93d;
+    border: 1px solid rgba(0, 0, 0, 0.35);
+    border-radius: 2px;
+    cursor: pointer;
+    box-sizing: border-box;
+}
+
+.tt-stopline-marker:hover {
+    filter: brightness(1.1);
+}
+
+.tt-stopline-marker--selected {
+    /* 選択状態は色そのものを変えず(色は駅データ由来の識別色のため)、
+       枠線とリングで選択中であることを示す。 */
+    border: 2px solid #1d6fce;
+    box-shadow: 0 0 0 2px rgba(29, 111, 206, 0.35);
+    z-index: 1;
+}
+
+.tt-stopline-tooltip {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-30%);
+    background: #555;
+    color: #fff;
+    font-size: 11px;
+    white-space: nowrap;
+    padding: 3px 6px;
+    border-radius: 3px;
+    pointer-events: none;
+}
+
+.tt-stopline-marker:hover .tt-stopline-tooltip {
+    display: block;
+}
 
 .tt-modal-actions {
     display: flex;
