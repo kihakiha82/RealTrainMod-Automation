@@ -116,7 +116,6 @@ function TimeInputModal({ cellInfo, stationName, onSave, onClose, trackLists}) {
     const [arrValue, setArrValue] = useState(cellInfo.arr || '');
     const [depValue, setDepValue] = useState(cellInfo.dep || '');
     const [trackValue, setTrackValue] = useState(cellInfo.track || '');
-    const [isPass, setIsPass] = useState(!!cellInfo.pass);
     const isCurrentlyNone = !cellInfo.pass && !cellInfo.arr && !cellInfo.dep && !cellInfo.track;
     const initialOpType = cellInfo.pass ? 'pass' : (isCurrentlyNone ? 'none' : 'stop');
     const [opType, setOpType] = useState(initialOpType);
@@ -209,12 +208,11 @@ function TimeInputModal({ cellInfo, stationName, onSave, onClose, trackLists}) {
                         <label className="tt-modal-field tt-modal-field--track">
                             <span>発着番線</span>
                             <select
-                                value={trackValue}
+                                value={trackLists[trackValue - 1]}
                                 onChange={e => setTrackValue(e.target.value)}
                                 style={{ flex: 1, marginLeft: '4px' }}
                                 autoFocus={cellInfo.clickedSub === 'track'}
                             >
-                                <option value="">未選択</option>
                                 {trackLists.map((track) => (
                                     <option key={track} value={track}>
                                         {track}
@@ -352,7 +350,7 @@ const TimeCell = React.memo(function TimeCell({
 
     let displayValue;
     if (entry.pass) {
-        displayValue = sub === 'track' ? '' : 'ﾚ';
+        displayValue = sub === 'track' ? entry.track : 'ﾚ';
     } else if (sub === 'arr') {
         displayValue = formatTimeDisplay(entry.arr, showSeconds);
     } else if (sub === 'dep') {
@@ -605,6 +603,7 @@ export function TimetablePanel({
             arr: entry.arr || '',
             dep: entry.dep || '',
             track: entry.track || '',
+            pass: !!entry.pass,
             anchorRect,
             clickedSub: sub,
         });

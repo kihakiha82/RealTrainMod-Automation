@@ -94,37 +94,42 @@ function parseStationsForDirection(rosenPart, direction) {
     });
 }
 
+function resolveTrackLabel(idxStr, station) {
+    const trackIdx = /^\d+$/.test(idxStr || '') ? parseInt(idxStr, 10) : null;
+    if (trackIdx !== null && station._trackLabels && trackIdx >= 0 && trackIdx < station._trackLabels.length) {
+        return station._trackLabels[trackIdx];
+    }
+    return null;
+}
+
 function parseField(field, station) {
     if (field === '') return {};
 
     if (!field.includes(';')) {
-        // 運行区間内・停車なし(通過): "<進入側番線Index>$<出発側番線Index>"
-        const [beforeIdx, afterIdx] = splitOnce(field, '$');
-        const idxStr = beforeIdx || afterIdx;
-        const trackIdx = /^\d+$/.test(idxStr) ? parseInt(idxStr, 10) : null;
-        let trackLabel = null;
-        if (trackIdx !== null && station._trackLabels && trackIdx >= 0 && trackIdx < station._trackLabels.length) {
-            trackLabel = station._trackLabels[trackIdx];
-        }
+        // 運行区間内・停車なし(通過): "<コード>$<番線Index>"
+        // "$" 左側は駅によらずほぼ固定値で番線を指しておらず、実際に駅ごとの番線を
+        // 指しているのは "$" 右側の数字だった(全1968件中0件が範囲外で一致)。
+        // 時刻は元データに存在しないため保存できないが、番線はこちらを使えば取れる。
+        const [, afterIdx] = splitOnce(field, '$');
+        const trackLabel = resolveTrackLabel(afterIdx, station);
         return trackLabel ? { pass: true, track: trackLabel } : { pass: true };
     }
 
-    const [before, restRaw] = splitOnce(field, ';');
-    let timesPart, after;
+    const [, restRaw] = splitOnce(field, ';');
+    let timesPart;
+    let afterIdx;
     if (restRaw.includes('$')) {
         const i = restRaw.lastIndexOf('$');
         timesPart = restRaw.slice(0, i);
-        after = restRaw.slice(i + 1);
+        afterIdx = restRaw.slice(i + 1);
     } else {
         timesPart = restRaw;
-        after = before;
+        afterIdx = '';
     }
 
-    const trackIdx = /^\d+$/.test(before) ? parseInt(before, 10) : null;
-    let trackLabel = null;
-    if (trackIdx !== null && station._trackLabels && trackIdx >= 0 && trackIdx < station._trackLabels.length) {
-        trackLabel = station._trackLabels[trackIdx];
-    }
+    // 停車エントリも同様に、";"の前(before)ではなく "$" の右側(afterIdx)が番線を指す
+    // (before はほぼ常に "1" で、番線ではなく別の意味のコードだった)。
+    const trackLabel = resolveTrackLabel(afterIdx, station);
 
     const entry = {};
     if (trackLabel) entry.track = trackLabel;
@@ -133,7 +138,6 @@ function parseField(field, station) {
         const [chakuS, hatsuS] = splitOnce(timesPart, '/');
         if (chakuS) entry.arr = chakuS;
         if (hatsuS) entry.dep = hatsuS;
-
     } else if (timesPart) {
         const t = timesPart;
         if (station.hasDep && !station.hasArr) entry.dep = t;
@@ -252,5 +256,6 @@ export function parseOud2(text) {
         throw new Error('Kudari./Nobori. のいずれの列車データも見つかりませんでした。');
     }
 
+    console.log(result.kudari);
     return result;
 }
